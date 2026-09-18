@@ -86,6 +86,7 @@ class EmeraldEnv(gym.Env):
         self._tiles_per_map: dict[tuple[int, int], int] = {}
         self._prev: dict | None = None
         self._furthest_map = (0, 0)
+        self._flag_baseline: dict[str, int] | None = None
 
         self.action_space = gym.spaces.Discrete(len(self.ACTIONS))
         self.observation_space = gym.spaces.Dict({
@@ -150,13 +151,21 @@ class EmeraldEnv(gym.Env):
         if prev is not None:
             reward += self.BADGE_REWARD * max(0, s["badges"] - prev["badges"])
 
-            script_delta = s["script_flag_count"] - prev["script_flag_count"]
-            if 0 < script_delta <= self.MAX_FLAG_DELTA:
-                reward += self.SCRIPT_FLAG_REWARD * script_delta
+            # ponytail: a save-block relocation parses as garbage for one step, swinging
+            # the flag popcount wildly in one direction and back the next. Measuring
+            # against the last plausible reading means the garbage step pays nothing AND
+            # does not poison the baseline, so the recovery step reads as a zero delta.
+            # Ceiling: a legitimate burst above MAX_FLAG_DELTA is dropped, not deferred.
+            if self._flag_baseline is not None:
+                script_delta = s["script_flag_count"] - self._flag_baseline["script"]
+                if abs(script_delta) <= self.MAX_FLAG_DELTA:
+                    reward += self.SCRIPT_FLAG_REWARD * max(0, script_delta)
+                    self._flag_baseline["script"] = s["script_flag_count"]
 
-            trainer_delta = s["trainer_flag_count"] - prev["trainer_flag_count"]
-            if 0 < trainer_delta <= self.MAX_FLAG_DELTA:
-                reward += self.TRAINER_REWARD * trainer_delta
+                trainer_delta = s["trainer_flag_count"] - self._flag_baseline["trainer"]
+                if abs(trainer_delta) <= self.MAX_FLAG_DELTA:
+                    reward += self.TRAINER_REWARD * max(0, trainer_delta)
+                    self._flag_baseline["trainer"] = s["trainer_flag_count"]
 
             reward += self.LEVEL_REWARD * max(
                 0, sum(s["party_levels"]) - sum(prev["party_levels"])
@@ -202,6 +211,10 @@ class EmeraldEnv(gym.Env):
 
         s = self.state_reader.read()
         self._prev = s
+        self._flag_baseline = {
+            "script": s["script_flag_count"],
+            "trainer": s["trainer_flag_count"],
+        }
         return self._observation(s), self._info(s)
 
     def step(self, action: int):

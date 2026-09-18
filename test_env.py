@@ -129,7 +129,8 @@ def test_implausible_flag_delta_scores_zero():
     env = EmeraldEnv()
     env.reset()
     s = env.state_reader.read()
-    env._prev = dict(s, script_flag_count=4, trainer_flag_count=0)
+    env._flag_baseline = {"script": 4, "trainer": 0}
+    env._prev = dict(s)
     spike = dict(s, script_flag_count=181, trainer_flag_count=64)
     env._visited_tiles.clear()
     env._tiles_per_map.clear()
@@ -148,7 +149,8 @@ def test_plausible_flag_delta_still_pays():
     env = EmeraldEnv()
     env.reset()
     s = env.state_reader.read()
-    env._prev = dict(s, script_flag_count=10, trainer_flag_count=0)
+    env._flag_baseline = {"script": 10, "trainer": 0}
+    env._prev = dict(s)
     real = dict(s, script_flag_count=13, trainer_flag_count=0)
     env._visited_tiles.clear()
     env._tiles_per_map.clear()
@@ -157,6 +159,31 @@ def test_plausible_flag_delta_still_pays():
     assert r >= 3 * EmeraldEnv.SCRIPT_FLAG_REWARD, f"real progress underpaid: {r}"
     env.close()
     print("test_plausible_flag_delta_still_pays PASSED")
+
+
+def test_garbage_read_does_not_poison_baseline():
+    """A transient spike then recovery must pay nothing, not pay on recovery."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._flag_baseline = {"script": 181, "trainer": 64}
+    env._prev = dict(s, script_flag_count=181, trainer_flag_count=64)
+    env._visited_tiles.clear(); env._tiles_per_map.clear(); env._visited_maps.clear()
+
+    # trainer_flag_count=0 here (not the coordinator-specified 73): a delta of
+    # 73-64=9 sits inside MAX_FLAG_DELTA and is legitimately payable, which
+    # doesn't exercise this regression. 0 gives a delta of 64, mirroring the
+    # magnitude of the originally observed trainer-flag transient.
+    garbage = dict(s, script_flag_count=4, trainer_flag_count=0)
+    r_garbage = env._compute_reward(garbage)
+    recovery = dict(s, script_flag_count=181, trainer_flag_count=64)
+    r_recovery = env._compute_reward(recovery)
+
+    assert env._flag_baseline["script"] == 181, "garbage poisoned the baseline"
+    assert r_recovery <= 1e-6, f"recovery paid {r_recovery}, expected 0"
+    assert r_garbage <= EmeraldEnv.NEW_MAP_REWARD + EmeraldEnv.NEW_TILE_REWARD + 1e-6
+    env.close()
+    print("test_garbage_read_does_not_poison_baseline PASSED")
 
 
 if __name__ == "__main__":
@@ -171,4 +198,5 @@ if __name__ == "__main__":
     test_reward_finite_over_random_rollout()
     test_implausible_flag_delta_scores_zero()
     test_plausible_flag_delta_still_pays()
+    test_garbage_read_does_not_poison_baseline()
     print("\nall env tests passed")
