@@ -2,9 +2,10 @@
 exploration reward, per the spec's primary risk.
 
 Corrections applied per project-lead ruling (see task-5-report.md):
-1. maps_visited (env's running distinct-map count) drives left_start, not
-   furthest_map (a running max that can't register a "lower" map). maps_reached
-   still legitimately uses furthest_map, since that's the intended metric there.
+1. maps_visited (env's running distinct-map count) drives left_start, not a
+   lexicographic map-id comparison (which has nothing to do with route
+   progress and can't register a "lower" map once a higher-numbered one is
+   seen). maps_reached uses info["map"] (the current map at episode end).
 2. Extra measurement: count step-to-step decreases in script_flag_count and
    trainer_flag_count, to check for a reward-leak precondition (a flag that
    clears and re-sets would pay NEW_TILE-style reward again via max(0, delta)).
@@ -50,12 +51,12 @@ def main():
                 break
 
         maps_this_episode = info["maps_visited"]
-        maps_reached.add(info["furthest_map"])
+        maps_reached.add(info["map"])
         tiles.append(info["tiles_visited"])
         if maps_this_episode > 1:
             left_start += 1
         print(f"episode {ep+1}/{EPISODES}: {info['tiles_visited']} tiles, "
-              f"{maps_this_episode} maps, furthest {info['furthest_map']}")
+              f"{maps_this_episode} maps, furthest {info['map']}")
 
     result = {
         "episodes": EPISODES,

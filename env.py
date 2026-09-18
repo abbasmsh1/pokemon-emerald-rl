@@ -85,8 +85,8 @@ class EmeraldEnv(gym.Env):
         self._visited_maps: set[tuple[int, int]] = set()
         self._tiles_per_map: dict[tuple[int, int], int] = {}
         self._prev: dict | None = None
-        self._furthest_map = (0, 0)
         self._flag_baseline: dict[str, int] | None = None
+        self._max_level_sum = 0
 
         self.action_space = gym.spaces.Discrete(len(self.ACTIONS))
         self.observation_space = gym.spaces.Dict({
@@ -178,16 +178,18 @@ class EmeraldEnv(gym.Env):
                     reward += self.TRAINER_REWARD * max(0, trainer_delta)
                     self._flag_baseline["trainer"] = s["trainer_flag_count"]
 
-            reward += self.LEVEL_REWARD * max(
-                0, sum(s["party_levels"]) - sum(prev["party_levels"])
-            )
+            # ponytail: pay only for a new all-time-high party level sum this episode.
+            # Diffing against the previous step lets a PC deposit/withdraw cycle re-pay
+            # the same levels indefinitely.
+            level_sum = sum(s["party_levels"])
+            if level_sum > self._max_level_sum:
+                reward += self.LEVEL_REWARD * (level_sum - self._max_level_sum)
+                self._max_level_sum = level_sum
+
             reward += self.SEEN_REWARD * max(0, s["seen"] - prev["seen"])
             reward += self.CAUGHT_REWARD * max(0, s["caught"] - prev["caught"])
             if s["whiteout"] and not prev["whiteout"]:
                 reward += self.WHITEOUT_PENALTY
-
-        if map_key > self._furthest_map:
-            self._furthest_map = map_key
 
         self._prev = s
         return reward
@@ -200,7 +202,7 @@ class EmeraldEnv(gym.Env):
             "badges": s["badges"],
             "maps_visited": len(self._visited_maps),
             "tiles_visited": len(self._visited_tiles),
-            "furthest_map": self._furthest_map,
+            "map": s["map"],
         }
 
     def reset(self, seed=None, options=None):
@@ -220,25 +222,29 @@ class EmeraldEnv(gym.Env):
         self._visited_tiles.clear()
         self._visited_maps.clear()
         self._tiles_per_map.clear()
-        self._furthest_map = (0, 0)
-        self._prev = None
 
+        self.state_reader.reset()
         s = self.state_reader.read()
         self._prev = s
         self._flag_baseline = {
             "script": s["script_flag_count"],
             "trainer": s["trainer_flag_count"],
         }
+        self._max_level_sum = sum(s["party_levels"])
         return self._observation(s), self._info(s)
 
     def step(self, action: int):
         key = self.ACTIONS[action]
+        # ponytail: Gen-3 gates dialogue, menus and battle moves on a fresh press
+        # edge. Holding a key across steps reads as ONE press, so two consecutive
+        # A actions would advance one textbox, not two. Release for one frame first.
+        # Ceiling: costs 1 of the 24 frames per step.
         with suppress_stdout():
-            if key is None:
-                self.gba.core.set_keys()
-            else:
+            self.gba.core.set_keys()
+            self.gba.core.run_frame()
+            if key is not None:
                 self.gba.core.set_keys(KEY_MAP[key])
-            for _ in range(self.frameskip):
+            for _ in range(self.frameskip - 1):
                 self.gba.core.run_frame()
 
         self._frames.append(self._gray_downscaled())

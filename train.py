@@ -20,7 +20,7 @@ _WARMUP.core.run_frame()
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
-from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from env import EmeraldEnv
 
@@ -35,40 +35,46 @@ def make_env():
 
 
 class ProgressCallback(BaseCallback):
-    """Logs progress metrics and dumps a savestate at each new furthest map.
+    """Logs progress metrics and dumps a savestate at each new high in
+    distinct maps visited.
 
     The savestates are the raw material for the spec's curriculum fallback.
     Workers live in separate processes, so the state is pulled back with
-    env_method rather than read directly.
+    env_method rather than read directly. maps_visited (a running distinct-
+    map count) drives this rather than a lexicographic map-id comparison,
+    which has nothing to do with route progress: Littleroot is (0,9) but
+    Oldale is (0,10), Petalburg (0,0) and Rustboro (0,3), so pinning on
+    "furthest" map id would never register most of the early-game towns.
     """
 
     def __init__(self, save_dir: str = "checkpoints"):
         super().__init__()
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(exist_ok=True)
-        self.best_map = (0, 0)
+        self.best_maps_visited = 0
 
     def _on_step(self) -> bool:
         best_badges = 0
         best_tiles = 0
         for i, info in enumerate(self.locals.get("infos", [])):
-            if "furthest_map" not in info:
+            if "maps_visited" not in info:
                 continue
             best_badges = max(best_badges, info["badges"])
             best_tiles = max(best_tiles, info["tiles_visited"])
-            if info["furthest_map"] > self.best_map:
-                self.best_map = info["furthest_map"]
-                group, num = self.best_map
+            if info["maps_visited"] > self.best_maps_visited:
+                self.best_maps_visited = info["maps_visited"]
+                n = self.best_maps_visited
+                group, num = info["map"]
                 blob = self.training_env.env_method("save_state", indices=[i])[0]
-                path = self.save_dir / f"furthest_{group}_{num}.state"
+                path = self.save_dir / f"furthest_{n}maps_{group}_{num}.state"
                 path.write_bytes(blob)
-                self.logger.record("progress/new_furthest_map", float(num))
-                print(f"new furthest map: group {group} num {num} "
+                self.logger.record("progress/new_maps_visited", float(n))
+                print(f"new maps_visited high: {n} maps, now at group {group} num {num} "
                       f"at {self.num_timesteps} steps -> {path}")
 
         self.logger.record("progress/badges", best_badges)
         self.logger.record("progress/tiles_visited", best_tiles)
-        self.logger.record("progress/furthest_map_num", float(self.best_map[1]))
+        self.logger.record("progress/maps_visited", float(self.best_maps_visited))
         return True
 
 
@@ -82,7 +88,10 @@ def main():
     # from a clean server process that never saw the torch-after-mgba warmup
     # above, so they'd hang the same way. "fork" makes workers inherit this
     # already-inoculated parent process. Do not "clean this up" to the default.
-    env = SubprocVecEnv([make_env() for _ in range(N_ENVS)], start_method="fork")
+    # VecMonitor: without it there is no rollout/ep_rew_mean or ep_len_mean in
+    # TensorBoard, the one number that answers "is this learning" on a
+    # multi-day run.
+    env = VecMonitor(SubprocVecEnv([make_env() for _ in range(N_ENVS)], start_method="fork"))
 
     if args.resume:
         model = PPO.load(args.resume, env=env, tensorboard_log="runs")

@@ -34,6 +34,13 @@ class GameState:
         self.gba = gba
         self._last_good = None
 
+    def reset(self) -> None:
+        """Call at the start of each episode. Without this, a negative-map
+        read on the new episode's first step would return the PREVIOUS
+        episode's cached state (including its badges), which env.py's
+        termination check would act on."""
+        self._last_good = None
+
     def read(self) -> dict:
         sb1 = read_save_block_1(self.gba)
         sb2 = read_save_block_2(self.gba)
@@ -91,6 +98,10 @@ class GameState:
             "caught": caught,
             "script_flag_count": _popcount(script),
             "trainer_flag_count": _popcount(trainer),
+            # Heuristic, not an engine flag: true whenever the party is
+            # non-empty and total HP is zero. Good enough to gate episode
+            # termination in env.py, but do not assume it mirrors any
+            # in-game "whiteout" state/flag.
             "whiteout": len(party) > 0 and total_hp == 0,
         }
 

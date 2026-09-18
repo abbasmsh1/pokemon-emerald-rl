@@ -57,7 +57,7 @@ def main():
 
         if terminated or truncated:
             print(f"episode end: badges {info['badges']}, "
-                  f"tiles {info['tiles_visited']}, map {info['furthest_map']}")
+                  f"tiles {info['tiles_visited']}, map {info['map']}")
             obs, info = env.reset()
 
     pygame.quit()

@@ -250,6 +250,35 @@ def test_transition_step_cannot_terminate():
     print("test_transition_step_cannot_terminate PASSED")
 
 
+def test_repeated_press_registers_multiple_times():
+    """Two consecutive identical actions must register as two fresh presses,
+    not one continuous hold that Gen-3 reads as a single press. Exercised
+    from a genuine cold boot (the constructor already leaves the emulator
+    there; env.reset() would load boot.state instead, which is a
+    post-intro, free-movement state with no dialogue open to advance
+    through, so it can't distinguish these two scenarios)."""
+    N = 300
+
+    repeated = EmeraldEnv()
+    for _ in range(N):
+        repeated.step(5)  # A, N times
+    s_repeated = repeated.state_reader.read()
+    repeated.close()
+
+    single = EmeraldEnv()
+    single.step(5)  # a single A press
+    for _ in range(N - 1):
+        single.step(0)  # no-op
+    s_single = single.state_reader.read()
+    single.close()
+
+    assert s_repeated["script_flag_count"] > s_single["script_flag_count"], (
+        f"repeated A ({s_repeated['script_flag_count']} flags) did not "
+        f"out-progress a single A + no-ops ({s_single['script_flag_count']} flags)"
+    )
+    print("test_repeated_press_registers_multiple_times PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_seven_discrete()
     test_observation_matches_declared_space()
@@ -265,4 +294,5 @@ if __name__ == "__main__":
     test_garbage_read_does_not_poison_baseline()
     test_map_transition_step_scores_nothing()
     test_transition_step_cannot_terminate()
+    test_repeated_press_registers_multiple_times()
     print("\nall env tests passed")
