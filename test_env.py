@@ -186,6 +186,34 @@ def test_garbage_read_does_not_poison_baseline():
     print("test_garbage_read_does_not_poison_baseline PASSED")
 
 
+def test_map_transition_step_scores_nothing():
+    """A step where the map id is changing is mid-relocation: score nothing."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._visited_tiles.clear(); env._tiles_per_map.clear(); env._visited_maps.clear()
+    env._flag_baseline = {"script": 181, "trainer": 64}
+    env._prev = dict(s, map=(0, 9), script_flag_count=181, trainer_flag_count=64)
+
+    # the garbage read: bogus map, flags shifted between slices
+    garbage = dict(s, map=(0, 0), script_flag_count=167, trainer_flag_count=78)
+    assert env._compute_reward(garbage) == 0.0, "in-flight step paid out"
+    assert (0, 0) not in env._visited_maps, "bogus map recorded as visited"
+    assert env._flag_baseline["script"] == 181, "baseline poisoned in flight"
+
+    # arrival, still changing
+    arriving = dict(s, map=(1, 4), script_flag_count=181, trainer_flag_count=64)
+    assert env._compute_reward(arriving) == 0.0, "arrival step paid before settling"
+
+    # first stable step credits the real new map exactly once
+    settled = dict(s, map=(1, 4), script_flag_count=181, trainer_flag_count=64)
+    r = env._compute_reward(settled)
+    assert r >= EmeraldEnv.NEW_MAP_REWARD, f"real new map not credited: {r}"
+    assert (1, 4) in env._visited_maps
+    env.close()
+    print("test_map_transition_step_scores_nothing PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_seven_discrete()
     test_observation_matches_declared_space()
@@ -199,4 +227,5 @@ if __name__ == "__main__":
     test_implausible_flag_delta_scores_zero()
     test_plausible_flag_delta_still_pays()
     test_garbage_read_does_not_poison_baseline()
+    test_map_transition_step_scores_nothing()
     print("\nall env tests passed")

@@ -131,10 +131,21 @@ class EmeraldEnv(gym.Env):
         }
 
     def _compute_reward(self, s: dict) -> float:
+        # ponytail: the save block relocates during a map transition and parses as
+        # garbage for a step or two, with a bogus map id like (0,0) or (-1,-1) and a
+        # flag array read at a shifted offset. Any step where the map id is still
+        # changing is in-flight: score nothing and record nothing. The genuine
+        # arrival is credited on the first stable step instead.
+        # Ceiling: new-map credit is delayed one step, and flags set exactly during
+        # a warp fold into the next stable step's delta.
+        map_key = s["map"]
+        if self._prev is not None and map_key != self._prev["map"]:
+            self._prev = s
+            return 0.0
+
         reward = 0.0
         prev = self._prev
 
-        map_key = s["map"]
         if map_key not in self._visited_maps:
             self._visited_maps.add(map_key)
             reward += self.NEW_MAP_REWARD
