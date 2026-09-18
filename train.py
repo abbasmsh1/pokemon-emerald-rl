@@ -5,12 +5,13 @@ steps/sec) and the machine has ~12GB free RAM, so 16 risks swapping.
 """
 
 import argparse
-import os
 from pathlib import Path
 
 # ponytail: importing torch before any mgba core exists makes libmgba's
 # run_frame() spin forever. Creating one core first inoculates the process.
-# This import must stay above the torch/SB3 imports below.
+# Only the ORDER matters: verified that the inoculation survives this core
+# being dereferenced and garbage collected, so the name is for clarity only.
+# This block must stay above the torch/SB3 imports below.
 # Ceiling: costs one extra 16MB ROM copy at startup.
 from pygba import PyGBA as _PyGBA
 
@@ -93,7 +94,10 @@ def main():
             n_steps=N_STEPS,
             batch_size=512,
             n_epochs=3,
-            gamma=0.999,       # long horizon: the badge is ~50k steps away
+            gamma=0.999,       # ~1k-step effective horizon. The badge is far beyond it,
+                               # but the reward is dense by design (tile novelty pays
+                               # every few steps), so the agent follows a local gradient
+                               # rather than needing to see the badge from the start.
             ent_coef=0.01,     # keep exploring
             learning_rate=2.5e-4,
             tensorboard_log="runs",

@@ -6,7 +6,9 @@ import argparse
 
 # ponytail: importing torch before any mgba core exists makes libmgba's
 # run_frame() spin forever. Creating one core first inoculates the process.
-# This import must stay above the torch/SB3 imports below.
+# Only the ORDER matters: verified that the inoculation survives this core
+# being dereferenced and garbage collected, so the name is for clarity only.
+# This block must stay above the torch/SB3 imports below.
 # Ceiling: costs one extra 16MB ROM copy at startup.
 from pygba import PyGBA as _PyGBA
 
