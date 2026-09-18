@@ -1,0 +1,13 @@
+# Commercial ROM - never commit
+*.gba
+*.zip
+
+.venv/
+__pycache__/
+*.pyc
+
+# Training artifacts
+runs/
+checkpoints/
+tensorboard/
+*.log
