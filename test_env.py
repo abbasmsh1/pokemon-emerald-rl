@@ -74,6 +74,56 @@ def test_state_vector_does_not_saturate():
     print("test_state_vector_does_not_saturate PASSED")
 
 
+def test_new_tile_rewards_once():
+    """Revisiting a tile must not pay again."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    key = (s["map"][0], s["map"][1], s["pos"][0], s["pos"][1])
+
+    env._visited_tiles.clear()
+    env._tiles_per_map.clear()
+    first = env._compute_reward(s)
+    second = env._compute_reward(s)
+
+    assert first > second, f"first visit {first} should beat revisit {second}"
+    assert key in env._visited_tiles
+    env.close()
+    print("test_new_tile_rewards_once PASSED")
+
+
+def test_tile_reward_capped_per_map():
+    env = EmeraldEnv()
+    env.reset()
+    base = env.state_reader.read()
+    m = base["map"]
+
+    total = 0.0
+    for i in range(EmeraldEnv.TILE_CAP_PER_MAP + 50):
+        s = dict(base, pos=(i % 256, i // 256))
+        total += env._compute_reward(s)
+
+    assert env._tiles_per_map[m] == EmeraldEnv.TILE_CAP_PER_MAP, (
+        f"cap not enforced: {env._tiles_per_map[m]}"
+    )
+    env.close()
+    print("test_tile_reward_capped_per_map PASSED")
+
+
+def test_reward_finite_over_random_rollout():
+    env = EmeraldEnv()
+    env.reset()
+    total = 0.0
+    for _ in range(1000):
+        _, r, term, trunc, _ = env.step(env.action_space.sample())
+        assert np.isfinite(r), "non-finite reward"
+        total += r
+        if term or trunc:
+            env.reset()
+    print(f"test_reward_finite_over_random_rollout PASSED (total {total:.2f})")
+    env.close()
+
+
 if __name__ == "__main__":
     test_action_space_is_seven_discrete()
     test_observation_matches_declared_space()
@@ -81,4 +131,7 @@ if __name__ == "__main__":
     test_step_returns_valid_transition()
     test_frame_stack_advances()
     test_state_vector_does_not_saturate()
+    test_new_tile_rewards_once()
+    test_tile_reward_capped_per_map()
+    test_reward_finite_over_random_rollout()
     print("\nall env tests passed")

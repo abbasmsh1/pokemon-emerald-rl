@@ -38,6 +38,18 @@ class EmeraldEnv(gym.Env):
     # battle is trivially visible to the CNN given the 3-frame stack.
     ACTIONS = [None, "up", "down", "left", "right", "A", "B"]
 
+    TILE_CAP_PER_MAP = 400
+
+    BADGE_REWARD = 100.0
+    NEW_MAP_REWARD = 2.0
+    NEW_TILE_REWARD = 0.05
+    SCRIPT_FLAG_REWARD = 1.0
+    TRAINER_REWARD = 2.0
+    LEVEL_REWARD = 0.2
+    SEEN_REWARD = 0.1
+    CAUGHT_REWARD = 0.5
+    WHITEOUT_PENALTY = -5.0
+
     def __init__(
         self,
         rom_path: str = "Pokemon - Emerald Version (USA, Europe).gba",
@@ -64,6 +76,11 @@ class EmeraldEnv(gym.Env):
         self.state_reader = GameState(self.gba)
         self._frames = deque(maxlen=3)
         self._step_count = 0
+        self._visited_tiles: set[tuple[int, int, int, int]] = set()
+        self._visited_maps: set[tuple[int, int]] = set()
+        self._tiles_per_map: dict[tuple[int, int], int] = {}
+        self._prev: dict | None = None
+        self._furthest_map = (0, 0)
 
         self.action_space = gym.spaces.Discrete(len(self.ACTIONS))
         self.observation_space = gym.spaces.Dict({
@@ -107,6 +124,54 @@ class EmeraldEnv(gym.Env):
             "state": self._encode_state(s),
         }
 
+    def _compute_reward(self, s: dict) -> float:
+        reward = 0.0
+        prev = self._prev
+
+        map_key = s["map"]
+        if map_key not in self._visited_maps:
+            self._visited_maps.add(map_key)
+            reward += self.NEW_MAP_REWARD
+
+        tile_key = (map_key[0], map_key[1], s["pos"][0], s["pos"][1])
+        if tile_key not in self._visited_tiles:
+            count = self._tiles_per_map.get(map_key, 0)
+            # Cap stops the agent farming reward by pacing a large open route.
+            if count < self.TILE_CAP_PER_MAP:
+                self._visited_tiles.add(tile_key)
+                self._tiles_per_map[map_key] = count + 1
+                reward += self.NEW_TILE_REWARD
+
+        if prev is not None:
+            reward += self.BADGE_REWARD * max(0, s["badges"] - prev["badges"])
+            reward += self.SCRIPT_FLAG_REWARD * max(
+                0, s["script_flag_count"] - prev["script_flag_count"]
+            )
+            reward += self.TRAINER_REWARD * max(
+                0, s["trainer_flag_count"] - prev["trainer_flag_count"]
+            )
+            reward += self.LEVEL_REWARD * max(
+                0, sum(s["party_levels"]) - sum(prev["party_levels"])
+            )
+            reward += self.SEEN_REWARD * max(0, s["seen"] - prev["seen"])
+            reward += self.CAUGHT_REWARD * max(0, s["caught"] - prev["caught"])
+            if s["whiteout"] and not prev["whiteout"]:
+                reward += self.WHITEOUT_PENALTY
+
+        if map_key > self._furthest_map:
+            self._furthest_map = map_key
+
+        self._prev = s
+        return reward
+
+    def _info(self, s: dict) -> dict:
+        return {
+            "badges": s["badges"],
+            "maps_visited": len(self._visited_maps),
+            "tiles_visited": len(self._visited_tiles),
+            "furthest_map": self._furthest_map,
+        }
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self._step_count = 0
@@ -121,8 +186,15 @@ class EmeraldEnv(gym.Env):
         for _ in range(3):
             self._frames.append(frame)
 
+        self._visited_tiles.clear()
+        self._visited_maps.clear()
+        self._tiles_per_map.clear()
+        self._furthest_map = (0, 0)
+        self._prev = None
+
         s = self.state_reader.read()
-        return self._observation(s), {}
+        self._prev = s
+        return self._observation(s), self._info(s)
 
     def step(self, action: int):
         key = self.ACTIONS[action]
@@ -140,10 +212,10 @@ class EmeraldEnv(gym.Env):
         s = self.state_reader.read()
         obs = self._observation(s)
 
-        reward = 0.0  # Task 4
-        terminated = False
+        reward = self._compute_reward(s)
+        terminated = bool(s["badges"] >= 1 or s["whiteout"])
         truncated = self._step_count >= self.max_steps
-        return obs, reward, terminated, truncated, {}
+        return obs, reward, terminated, truncated, self._info(s)
 
     def render(self):
         if self.render_mode == "rgb_array":
