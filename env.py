@@ -192,6 +192,9 @@ class EmeraldEnv(gym.Env):
         self._prev = s
         return reward
 
+    def _should_terminate(self, s: dict, stable: bool) -> bool:
+        return bool(stable and (s["badges"] >= 1 or s["whiteout"]))
+
     def _info(self, s: dict) -> dict:
         return {
             "badges": s["badges"],
@@ -244,8 +247,14 @@ class EmeraldEnv(gym.Env):
         s = self.state_reader.read()
         obs = self._observation(s)
 
+        # ponytail: badges and whiteout are parsed from the same save-block read that
+        # relocates during a map transition, so an in-flight read can fabricate a
+        # badge bit or an all-fainted party. Terminate only on a stable reading.
+        # Ceiling: a genuine badge or whiteout landing exactly on a transition step
+        # is recognised one step late.
+        stable = self._prev is None or s["map"] == self._prev["map"]
         reward = self._compute_reward(s)
-        terminated = bool(s["badges"] >= 1 or s["whiteout"])
+        terminated = self._should_terminate(s, stable)
         truncated = self._step_count >= self.max_steps
         return obs, reward, terminated, truncated, self._info(s)
 

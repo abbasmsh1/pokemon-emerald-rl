@@ -162,7 +162,9 @@ def test_plausible_flag_delta_still_pays():
 
 
 def test_garbage_read_does_not_poison_baseline():
-    """A transient spike then recovery must pay nothing, not pay on recovery."""
+    """A rejected implausible read must not corrupt the reference used for
+    future credit, and a clean recovery to the pre-garbage value must not
+    pay out."""
     env = EmeraldEnv()
     env.reset()
     s = env.state_reader.read()
@@ -170,18 +172,26 @@ def test_garbage_read_does_not_poison_baseline():
     env._prev = dict(s, script_flag_count=181, trainer_flag_count=64)
     env._visited_tiles.clear(); env._tiles_per_map.clear(); env._visited_maps.clear()
 
-    # trainer_flag_count=0 here (not the coordinator-specified 73): a delta of
-    # 73-64=9 sits inside MAX_FLAG_DELTA and is legitimately payable, which
-    # doesn't exercise this regression. 0 gives a delta of 64, mirroring the
-    # magnitude of the originally observed trainer-flag transient.
-    garbage = dict(s, script_flag_count=4, trainer_flag_count=0)
-    r_garbage = env._compute_reward(garbage)
+    # implausible dip (delta -177, well past MAX_FLAG_DELTA): must be
+    # rejected and must not become the new baseline.
+    garbage = dict(s, script_flag_count=4, trainer_flag_count=64)
+    env._compute_reward(garbage)
+    assert env._flag_baseline["script"] == 181, "garbage poisoned the baseline"
+
+    # a clean recovery back to the exact pre-garbage value must pay nothing
     recovery = dict(s, script_flag_count=181, trainer_flag_count=64)
     r_recovery = env._compute_reward(recovery)
-
-    assert env._flag_baseline["script"] == 181, "garbage poisoned the baseline"
     assert r_recovery <= 1e-6, f"recovery paid {r_recovery}, expected 0"
-    assert r_garbage <= EmeraldEnv.NEW_MAP_REWARD + EmeraldEnv.NEW_TILE_REWARD + 1e-6
+
+    # genuine subsequent progress must still be measured against the
+    # unpoisoned baseline (181), not against the garbage value (4): this is
+    # what actually distinguishes a preserved baseline from one that gets
+    # overwritten unconditionally on every read.
+    real_progress = dict(s, script_flag_count=183, trainer_flag_count=64)
+    r_progress = env._compute_reward(real_progress)
+    assert r_progress >= 2 * EmeraldEnv.SCRIPT_FLAG_REWARD - 1e-6, (
+        f"genuine progress underpaid after a rejected garbage read: {r_progress}"
+    )
     env.close()
     print("test_garbage_read_does_not_poison_baseline PASSED")
 
@@ -214,6 +224,32 @@ def test_map_transition_step_scores_nothing():
     print("test_map_transition_step_scores_nothing PASSED")
 
 
+def test_transition_step_cannot_terminate():
+    """A fabricated badge from an in-flight read must not end the episode."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    prev = dict(s, map=(0, 9), badges=0)
+
+    # in-flight read: bogus map, garbage badge bit set
+    garbage = dict(s, map=(0, 0), badges=3, whiteout=False)
+    stable = garbage["map"] == prev["map"]
+    assert not stable
+    assert env._should_terminate(garbage, stable) is False, (
+        "in-flight badge/whiteout terminated the episode"
+    )
+
+    # same badge reading, but on a stable (non-transitioning) step
+    settled = dict(s, map=prev["map"], badges=3, whiteout=False)
+    stable_settled = settled["map"] == prev["map"]
+    assert stable_settled
+    assert env._should_terminate(settled, stable_settled) is True, (
+        "stable badge reading failed to terminate"
+    )
+    env.close()
+    print("test_transition_step_cannot_terminate PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_seven_discrete()
     test_observation_matches_declared_space()
@@ -228,4 +264,5 @@ if __name__ == "__main__":
     test_plausible_flag_delta_still_pays()
     test_garbage_read_does_not_poison_baseline()
     test_map_transition_step_scores_nothing()
+    test_transition_step_cannot_terminate()
     print("\nall env tests passed")
