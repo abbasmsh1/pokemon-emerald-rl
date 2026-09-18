@@ -8,6 +8,15 @@ import argparse
 import os
 from pathlib import Path
 
+# ponytail: importing torch before any mgba core exists makes libmgba's
+# run_frame() spin forever. Creating one core first inoculates the process.
+# This import must stay above the torch/SB3 imports below.
+# Ceiling: costs one extra 16MB ROM copy at startup.
+from pygba import PyGBA as _PyGBA
+
+_WARMUP = _PyGBA.load("Pokemon - Emerald Version (USA, Europe).gba")
+_WARMUP.core.run_frame()
+
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv
@@ -68,7 +77,11 @@ def main():
     parser.add_argument("--resume", type=str, default=None)
     args = parser.parse_args()
 
-    env = SubprocVecEnv([make_env() for _ in range(N_ENVS)])
+    # start_method explicit: SB3 defaults to "forkserver", which forks workers
+    # from a clean server process that never saw the torch-after-mgba warmup
+    # above, so they'd hang the same way. "fork" makes workers inherit this
+    # already-inoculated parent process. Do not "clean this up" to the default.
+    env = SubprocVecEnv([make_env() for _ in range(N_ENVS)], start_method="fork")
 
     if args.resume:
         model = PPO.load(args.resume, env=env, tensorboard_log="runs")
