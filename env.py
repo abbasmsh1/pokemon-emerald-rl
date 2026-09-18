@@ -89,10 +89,13 @@ class EmeraldEnv(gym.Env):
             vec[i] = 1.0 if i < s["badges"] else 0.0
         vec[8] = s["party_hp_frac"]
         vec[9] = (sum(levels) / len(levels) / 100.0) if levels else 0.0
-        vec[10] = s["map"][0] / 50.0
-        vec[11] = s["map"][1] / 100.0
-        vec[12] = s["pos"][0] / 100.0
-        vec[13] = s["pos"][1] / 100.0
+        # 127.0 is exact for signed-byte map identifiers (mapGroup/mapNum are
+        # "b", -128..127) and cannot saturate; 255.0 gives roughly 2x headroom
+        # over the largest Hoenn maps for tile coordinates (x/y are "H").
+        vec[10] = s["map"][0] / 127.0
+        vec[11] = s["map"][1] / 127.0
+        vec[12] = s["pos"][0] / 255.0
+        vec[13] = s["pos"][1] / 255.0
         vec[14] = np.log1p(s["money"]) / np.log1p(999_999)
         vec[15] = s["seen"] / POKEDEX_CAPACITY
         vec[16] = s["caught"] / POKEDEX_CAPACITY

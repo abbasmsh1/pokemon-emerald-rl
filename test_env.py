@@ -58,10 +58,27 @@ def test_frame_stack_advances():
     print("test_frame_stack_advances PASSED")
 
 
+def test_state_vector_does_not_saturate():
+    """Location fields must not clip to 1.0 for plausible in-game values."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    probe = dict(s, map=(3, 120), pos=(200, 240))
+    vec = env._encode_state(probe)
+    assert vec[10] < 1.0, f"mapGroup saturated: {vec[10]}"
+    assert vec[11] < 1.0, f"mapNum saturated: {vec[11]}"
+    assert vec[12] < 1.0, f"pos x saturated: {vec[12]}"
+    assert vec[13] < 1.0, f"pos y saturated: {vec[13]}"
+    assert env.observation_space["state"].contains(vec), "vec outside declared bounds"
+    env.close()
+    print("test_state_vector_does_not_saturate PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_seven_discrete()
     test_observation_matches_declared_space()
     test_reset_is_deterministic()
     test_step_returns_valid_transition()
     test_frame_stack_advances()
+    test_state_vector_does_not_saturate()
     print("\nall env tests passed")
