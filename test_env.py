@@ -124,6 +124,41 @@ def test_reward_finite_over_random_rollout():
     env.close()
 
 
+def test_implausible_flag_delta_scores_zero():
+    """A mid-relocation save-block parse must not pay out."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = dict(s, script_flag_count=4, trainer_flag_count=0)
+    spike = dict(s, script_flag_count=181, trainer_flag_count=64)
+    env._visited_tiles.clear()
+    env._tiles_per_map.clear()
+    env._visited_maps.clear()
+    r = env._compute_reward(spike)
+    assert r < EmeraldEnv.BADGE_REWARD, f"transient paid {r}, more than a badge"
+    assert r <= EmeraldEnv.NEW_MAP_REWARD + EmeraldEnv.NEW_TILE_REWARD + 1e-6, (
+        f"transient paid {r}, expected only map+tile"
+    )
+    env.close()
+    print("test_implausible_flag_delta_scores_zero PASSED")
+
+
+def test_plausible_flag_delta_still_pays():
+    """The clamp must not suppress real progress."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = dict(s, script_flag_count=10, trainer_flag_count=0)
+    real = dict(s, script_flag_count=13, trainer_flag_count=0)
+    env._visited_tiles.clear()
+    env._tiles_per_map.clear()
+    env._visited_maps.clear()
+    r = env._compute_reward(real)
+    assert r >= 3 * EmeraldEnv.SCRIPT_FLAG_REWARD, f"real progress underpaid: {r}"
+    env.close()
+    print("test_plausible_flag_delta_still_pays PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_seven_discrete()
     test_observation_matches_declared_space()
@@ -134,4 +169,6 @@ if __name__ == "__main__":
     test_new_tile_rewards_once()
     test_tile_reward_capped_per_map()
     test_reward_finite_over_random_rollout()
+    test_implausible_flag_delta_scores_zero()
+    test_plausible_flag_delta_still_pays()
     print("\nall env tests passed")

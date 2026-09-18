@@ -32,6 +32,7 @@ def _popcount(buf) -> int:
 class GameState:
     def __init__(self, gba: PyGBA):
         self.gba = gba
+        self._last_good = None
 
     def read(self) -> dict:
         sb1 = read_save_block_1(self.gba)
@@ -79,7 +80,7 @@ class GameState:
         script = flags[SCRIPT_FLAGS_START // 8:TRAINER_FLAGS_START // 8]
         trainer = flags[TRAINER_FLAGS_START // 8:SYSTEM_FLAGS_START // 8]
 
-        return {
+        result = {
             "badges": badges,
             "map": (loc["mapGroup"], loc["mapNum"]),
             "pos": (pos["x"], pos["y"]),
@@ -92,3 +93,15 @@ class GameState:
             "trainer_flag_count": _popcount(trainer),
             "whiteout": len(party) > 0 and total_hp == 0,
         }
+
+        # ponytail: save blocks relocate during map transitions and parse as garbage
+        # for one step. mapGroup/mapNum are signed bytes, so a negative value is
+        # impossible in a real map. Hold the last good read through the transient.
+        # Ceiling: only catches transients that corrupt the map id; the reward's
+        # delta clamp in env.py is the backstop for the rest.
+        if result["map"][0] < 0 or result["map"][1] < 0:
+            if self._last_good is not None:
+                return self._last_good
+        else:
+            self._last_good = result
+        return result

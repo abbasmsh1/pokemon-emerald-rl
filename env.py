@@ -40,6 +40,11 @@ class EmeraldEnv(gym.Env):
 
     TILE_CAP_PER_MAP = 400
 
+    # ponytail: real play sets at most a handful of event flags per 24-frame step.
+    # A jump far above that is a mid-relocation save-block parse, not progress.
+    # Ceiling: a legitimate burst above this cap is silently dropped.
+    MAX_FLAG_DELTA = 16
+
     BADGE_REWARD = 100.0
     NEW_MAP_REWARD = 2.0
     NEW_TILE_REWARD = 0.05
@@ -144,12 +149,15 @@ class EmeraldEnv(gym.Env):
 
         if prev is not None:
             reward += self.BADGE_REWARD * max(0, s["badges"] - prev["badges"])
-            reward += self.SCRIPT_FLAG_REWARD * max(
-                0, s["script_flag_count"] - prev["script_flag_count"]
-            )
-            reward += self.TRAINER_REWARD * max(
-                0, s["trainer_flag_count"] - prev["trainer_flag_count"]
-            )
+
+            script_delta = s["script_flag_count"] - prev["script_flag_count"]
+            if 0 < script_delta <= self.MAX_FLAG_DELTA:
+                reward += self.SCRIPT_FLAG_REWARD * script_delta
+
+            trainer_delta = s["trainer_flag_count"] - prev["trainer_flag_count"]
+            if 0 < trainer_delta <= self.MAX_FLAG_DELTA:
+                reward += self.TRAINER_REWARD * trainer_delta
+
             reward += self.LEVEL_REWARD * max(
                 0, sum(s["party_levels"]) - sum(prev["party_levels"])
             )
