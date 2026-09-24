@@ -20,8 +20,10 @@ _WARMUP.core.run_frame()
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
+from stable_baselines3.common.logger import Image as TBImage
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
+from coverage import render_coverage, render_to_array
 from env import EmeraldEnv
 
 N_ENVS = 8
@@ -78,10 +80,51 @@ class ProgressCallback(BaseCallback):
         return True
 
 
+class CoverageCallback(BaseCallback):
+    """Renders where the agent has been, as a contact sheet of per-map grids.
+
+    Unions every worker's coverage set, writes media/coverage_<step>.png, and
+    logs the same image to TensorBoard so exploration can be watched spreading
+    live in the Images tab rather than by opening files.
+    """
+
+    def __init__(self, every: int = 50_000, media_dir: str = "media"):
+        super().__init__()
+        self.every = every
+        self.media_dir = Path(media_dir)
+        self.media_dir.mkdir(exist_ok=True)
+        self._next_at = every
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps < self._next_at:
+            return True
+        self._next_at += self.every
+
+        tiles: set[tuple[int, int, int, int]] = set()
+        for worker_tiles in self.training_env.env_method("coverage"):
+            tiles.update(worker_tiles)
+        if not tiles:
+            return True
+
+        path = self.media_dir / f"coverage_{self.num_timesteps:09d}.png"
+        render_coverage(sorted(tiles), path)
+        # channels-last uint8; SB3's Image wants the dataformats spelled out
+        self.logger.record(
+            "coverage/map",
+            TBImage(render_to_array(sorted(tiles)), "HWC"),
+            exclude=("stdout", "log", "json", "csv"),
+        )
+        self.logger.record("coverage/unique_tiles", float(len(tiles)))
+        print(f"coverage: {len(tiles)} tiles at {self.num_timesteps} steps -> {path}")
+        return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=50_000_000)
     parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--coverage-every", type=int, default=50_000,
+                        help="steps between coverage renders")
     args = parser.parse_args()
 
     # start_method explicit: SB3 defaults to "forkserver", which forks workers
@@ -120,6 +163,7 @@ def main():
             name_prefix="emerald",
         ),
         ProgressCallback(),
+        CoverageCallback(every=args.coverage_every),
     ]
 
     model.learn(total_timesteps=args.steps, callback=callbacks,

@@ -11,3 +11,6 @@ runs/
 checkpoints/
 tensorboard/
 *.log
+
+# Coverage renders are training output; force-add the ones worth keeping
+media/

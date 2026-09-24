@@ -87,6 +87,11 @@ class EmeraldEnv(gym.Env):
         self._prev: dict | None = None
         self._flag_baseline: dict[str, int] | None = None
         self._max_level_sum = 0
+        # Reporting only, never used in reward. Deliberately uncapped and NOT
+        # cleared on reset: _visited_tiles is capped at TILE_CAP_PER_MAP to stop
+        # reward farming and resets each episode, so it would draw a truncated,
+        # single-episode picture. This accumulates the real footprint.
+        self._coverage: set[tuple[int, int, int, int]] = set()
 
         self.action_space = gym.spaces.Discrete(len(self.ACTIONS))
         self.observation_space = gym.spaces.Dict({
@@ -251,6 +256,7 @@ class EmeraldEnv(gym.Env):
         self._step_count += 1
 
         s = self.state_reader.read()
+        self._coverage.add((s["map"][0], s["map"][1], s["pos"][0], s["pos"][1]))
         obs = self._observation(s)
 
         # ponytail: badges and whiteout are parsed from the same save-block read that
@@ -268,6 +274,11 @@ class EmeraldEnv(gym.Env):
         if self.render_mode == "rgb_array":
             return self._raw_frame().copy()
         return None
+
+    def coverage(self) -> list[tuple[int, int, int, int]]:
+        """Every (mapGroup, mapNum, x, y) this worker has stood on, across all
+        episodes. Retrieved across the process boundary with env_method."""
+        return list(self._coverage)
 
     def save_state(self) -> bytes:
         """Dump the emulator state. Used across process boundaries by the
