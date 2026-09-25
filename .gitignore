@@ -14,3 +14,6 @@ tensorboard/
 
 # Coverage renders are training output; force-add the ones worth keeping
 media/
+
+# Archived smoke-run artifacts
+archive_smoke/
