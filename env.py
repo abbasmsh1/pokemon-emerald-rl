@@ -1,6 +1,7 @@
 """Gymnasium environment for Pokemon Emerald on mGBA."""
 
 import contextlib
+import ctypes
 import os
 from collections import deque
 
@@ -17,15 +18,25 @@ SCREEN_SHAPE = (3, 80, 120)
 STATE_SIZE = 17
 
 
+_LIBC = ctypes.CDLL(None)
+
+
 @contextlib.contextmanager
 def suppress_stdout():
-    """mGBA logs from C at fd 1. Python-level redirection does not catch it."""
+    """mGBA logs from C at fd 1. Python-level redirection does not catch it.
+
+    The fflush is load-bearing, not tidiness. mGBA writes into libc's stdout
+    FILE buffer, and dup2 swaps the descriptor but not the buffer, so anything
+    still buffered flushes after fd 1 is restored and lands in the caller's
+    output. Flushing while fd 1 still points at /dev/null sends it there.
+    """
     devnull = os.open(os.devnull, os.O_WRONLY)
     saved = os.dup(1)
     try:
         os.dup2(devnull, 1)
         yield
     finally:
+        _LIBC.fflush(None)
         os.dup2(saved, 1)
         os.close(saved)
         os.close(devnull)
