@@ -47,7 +47,10 @@ class EmeraldEnv(gym.Env):
 
     # No in-battle flag: pygba exposes no battle address, and a full-screen
     # battle is trivially visible to the CNN given the 3-frame stack.
-    ACTIONS = [None, "up", "down", "left", "right", "A", "B"]
+    # start is appended rather than replacing the no-op so indices 0-6 keep their
+    # meaning. It unlocks the menu, so the agent can use items and heal instead of
+    # only walking, talking and fighting with whatever move the cursor lands on.
+    ACTIONS = [None, "up", "down", "left", "right", "A", "B", "start"]
 
     TILE_CAP_PER_MAP = 400
 
@@ -65,6 +68,12 @@ class EmeraldEnv(gym.Env):
     SEEN_REWARD = 0.1
     CAUGHT_REWARD = 0.5
     WHITEOUT_PENALTY = -5.0
+
+    # Charged every STALL_LIMIT steps that earn nothing at all. At 16,384 steps an
+    # episode can absorb at most three of these, so it nudges away from idling
+    # without overwhelming a +100 badge or the dense novelty signal.
+    STALL_LIMIT = 5000
+    STALL_PENALTY = -1.0
 
     def __init__(
         self,
@@ -98,6 +107,7 @@ class EmeraldEnv(gym.Env):
         self._prev: dict | None = None
         self._flag_baseline: dict[str, int] | None = None
         self._max_level_sum = 0
+        self._steps_since_reward = 0
         # Reporting only, never used in reward. Deliberately uncapped and NOT
         # cleared on reset: _visited_tiles is capped at TILE_CAP_PER_MAP to stop
         # reward farming and resets each episode, so it would draw a truncated,
@@ -207,6 +217,19 @@ class EmeraldEnv(gym.Env):
             if s["whiteout"] and not prev["whiteout"]:
                 reward += self.WHITEOUT_PENALTY
 
+        # Stall penalty: charge for going STALL_LIMIT steps without earning
+        # anything. Novelty runs out once a map is fully walked, leaving the agent
+        # free to idle at zero reward forever; this makes standing still cost
+        # something. The counter resets on the charge as well as on progress, so a
+        # long stall is billed repeatedly rather than only once.
+        if reward > 0.0:
+            self._steps_since_reward = 0
+        else:
+            self._steps_since_reward += 1
+            if self._steps_since_reward >= self.STALL_LIMIT:
+                reward += self.STALL_PENALTY
+                self._steps_since_reward = 0
+
         self._prev = s
         return reward
 
@@ -247,6 +270,7 @@ class EmeraldEnv(gym.Env):
             "trainer": s["trainer_flag_count"],
         }
         self._max_level_sum = sum(s["party_levels"])
+        self._steps_since_reward = 0
         return self._observation(s), self._info(s)
 
     def step(self, action: int):
