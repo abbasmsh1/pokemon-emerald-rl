@@ -37,6 +37,15 @@ It reaches Birch's lab and obtains Mudkip, which requires completing the bag sce
 
 **Actions.** `Discrete(8)` — no-op, up, down, left, right, A, B, start. One button per step, held 23 of 24 frames after a one-frame release. That release matters: Gen-3 gates dialogue, menus and battle moves on a fresh press edge, so a held button reads as a single press no matter how long it is held.
 
+**Vision.** By default a small CNN trained from scratch (NatureCNN), which is the
+standard choice for pixel-based RL. `--backbone resnet18` swaps in a frozen
+ImageNet ResNet18 instead, for comparison. Two caveats worth knowing: the three
+screen channels are consecutive frames rather than RGB, so ResNet's pretrained
+colour filters are being fed temporal structure; and ImageNet is photographs
+while Emerald is flat-shaded pixel art. Measured cost is roughly 15% throughput
+(266-312 fps against 300-330). Whether it actually helps is an open question the
+flag exists to answer.
+
 **Reward.** The badge is roughly 50,000 steps from the start, so a sparse signal cannot bridge the gap. Progress events are combined with a coordinate-novelty bonus:
 
 | Event | Reward |
@@ -62,6 +71,7 @@ The per-map tile cap stops the agent farming reward by pacing across a large rou
 | `state.py` | RAM-only game state reader, kept off ROM for speed |
 | `env.py` | Gymnasium environment, observations, reward |
 | `train.py` | PPO across 8 subprocess workers |
+| `backbone.py` | Optional pretrained ResNet18 feature extractor |
 | `coverage.py` | Renders the exploration overlay |
 | `stats.py` | Decodes a savestate into readable progress |
 | `baseline.py` | Random-agent exploration gate |
@@ -79,6 +89,7 @@ VIRTUAL_ENV=.venv uv pip install pygba pillow stable-baselines3 tensorboard
 
 python make_savestate.py                 # play the intro once, press S
 python train.py --steps 50000000
+python train.py --steps 50000000 --backbone resnet18   # pretrained vision instead
 python watch.py checkpoints/emerald_final.zip
 python stats.py
 tensorboard --logdir runs

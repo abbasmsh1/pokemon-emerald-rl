@@ -125,6 +125,11 @@ def main():
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--coverage-every", type=int, default=50_000,
                         help="steps between coverage renders")
+    parser.add_argument("--backbone", choices=("nature", "resnet18"), default="nature",
+                        help="nature: small CNN trained from scratch (default). "
+                             "resnet18: frozen ImageNet backbone")
+    parser.add_argument("--finetune", action="store_true",
+                        help="unfreeze the resnet18 backbone; needs far more VRAM")
     args = parser.parse_args()
 
     # start_method explicit: SB3 defaults to "forkserver", which forks workers
@@ -140,6 +145,18 @@ def main():
         model = PPO.load(args.resume, env=env, tensorboard_log="runs")
         print(f"resumed from {args.resume}")
     else:
+        policy_kwargs = {}
+        if args.backbone == "resnet18":
+            # Imported here, not at module scope, so a `nature` run never pays for
+            # torchvision or pulls the ImageNet weights off disk.
+            from backbone import ResNetExtractor
+
+            policy_kwargs = {
+                "features_extractor_class": ResNetExtractor,
+                "features_extractor_kwargs": {"finetune": args.finetune},
+            }
+            print(f"backbone: resnet18 (finetune={args.finetune})")
+
         model = PPO(
             "MultiInputPolicy",  # handles Dict obs: CNN for screen, MLP for state
             env,
@@ -153,6 +170,7 @@ def main():
             ent_coef=0.01,     # keep exploring
             learning_rate=2.5e-4,
             tensorboard_log="runs",
+            policy_kwargs=policy_kwargs,
             verbose=1,
         )
 
