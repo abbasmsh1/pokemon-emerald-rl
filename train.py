@@ -130,6 +130,10 @@ def main():
                              "resnet18: frozen ImageNet backbone")
     parser.add_argument("--finetune", action="store_true",
                         help="unfreeze the resnet18 backbone; needs far more VRAM")
+    parser.add_argument("--batch-size", type=int, default=128,
+                        help="PPO minibatch size. Smaller means more optimizer "
+                             "steps per rollout: better sample efficiency, lower "
+                             "throughput, less VRAM per step")
     args = parser.parse_args()
 
     # start_method explicit: SB3 defaults to "forkserver", which forks workers
@@ -161,7 +165,7 @@ def main():
             "MultiInputPolicy",  # handles Dict obs: CNN for screen, MLP for state
             env,
             n_steps=N_STEPS,
-            batch_size=512,
+            batch_size=args.batch_size,
             n_epochs=3,
             gamma=0.999,       # ~1k-step effective horizon. The badge is far beyond it,
                                # but the reward is dense by design (tile novelty pays

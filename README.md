@@ -90,6 +90,7 @@ VIRTUAL_ENV=.venv uv pip install pygba pillow stable-baselines3 tensorboard
 python make_savestate.py                 # play the intro once, press S
 python train.py --steps 50000000
 python train.py --steps 50000000 --backbone resnet18   # pretrained vision instead
+python train.py --steps 50000000 --batch-size 512      # default is 128
 python watch.py checkpoints/emerald_final.zip
 python stats.py
 tensorboard --logdir runs
