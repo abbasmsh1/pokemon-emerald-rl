@@ -17,6 +17,12 @@ PANEL_GAP = 10     # pixels between panels
 LABEL_H = 12       # pixels reserved above each panel for its caption
 LABEL_CHAR_W = 6   # approx width of PIL's default font, to size columns
 COLS = 4           # panels per row on the contact sheet
+# ponytail: a single garbage coordinate from an in-flight save-block read can be
+# up to 65535 (pos is uint16). One bad x and one bad y on the same map produced a
+# 65528x65526 bounding box, a 12.9GB allocation, and two OOM-killed training runs.
+# env.py now only records stable reads; this is the backstop so no input can do
+# that again. Ceiling: a genuinely enormous map is cropped rather than drawn whole.
+MAX_PANEL_SPAN = 512
 
 BACKGROUND = (18, 18, 22)
 UNVISITED = (44, 46, 54)
@@ -36,12 +42,18 @@ def group_by_map(
 
 
 def panel_bounds(coords: list[tuple[int, int]]) -> tuple[int, int, int, int]:
-    """Bounding box as (min_x, min_y, width, height), inclusive of both edges."""
+    """Bounding box as (min_x, min_y, width, height), inclusive of both edges.
+
+    Spans are capped at MAX_PANEL_SPAN so one outlying coordinate cannot turn a
+    panel into a multi-gigabyte allocation. See the constant for why.
+    """
     xs = [c[0] for c in coords]
     ys = [c[1] for c in coords]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
-    return min_x, min_y, max_x - min_x + 1, max_y - min_y + 1
+    w = min(max_x - min_x + 1, MAX_PANEL_SPAN)
+    h = min(max_y - min_y + 1, MAX_PANEL_SPAN)
+    return min_x, min_y, w, h
 
 
 def render_coverage(
@@ -71,7 +83,9 @@ def render_coverage(
         grid = np.zeros((h, w, 3), dtype=np.uint8)
         grid[:, :] = UNVISITED
         for x, y in coords:
-            grid[y - min_y, x - min_x] = VISITED
+            gx, gy = x - min_x, y - min_y
+            if 0 <= gy < h and 0 <= gx < w:
+                grid[gy, gx] = VISITED
         if current is not None and (current[0], current[1]) == map_key:
             cx, cy = current[2] - min_x, current[3] - min_y
             if 0 <= cy < h and 0 <= cx < w:

@@ -17,3 +17,5 @@ media/
 
 # Archived smoke-run artifacts
 archive_smoke/
+memwatch.sh
+memwatch.csv

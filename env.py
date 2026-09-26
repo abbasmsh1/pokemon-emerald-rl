@@ -267,7 +267,6 @@ class EmeraldEnv(gym.Env):
         self._step_count += 1
 
         s = self.state_reader.read()
-        self._coverage.add((s["map"][0], s["map"][1], s["pos"][0], s["pos"][1]))
         obs = self._observation(s)
 
         # ponytail: badges and whiteout are parsed from the same save-block read that
@@ -276,6 +275,13 @@ class EmeraldEnv(gym.Env):
         # Ceiling: a genuine badge or whiteout landing exactly on a transition step
         # is recognised one step late.
         stable = self._prev is None or s["map"] == self._prev["map"]
+        if stable:
+            # ponytail: same in-flight read that fabricates badges also fabricates
+            # coordinates, and pos is uint16, so a garbage value up to 65535 lands
+            # in the coverage set. One bad x and one bad y on the same map made
+            # render_coverage allocate a 65528x65526 bounding box (12.9GB) and the
+            # kernel OOM-killed training twice. Only record stable readings.
+            self._coverage.add((s["map"][0], s["map"][1], s["pos"][0], s["pos"][1]))
         reward = self._compute_reward(s)
         terminated = self._should_terminate(s, stable)
         truncated = self._step_count >= self.max_steps
