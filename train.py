@@ -20,17 +20,19 @@ _WARMUP.core.run_frame()
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
+from stable_baselines3.common.logger import Image as TBImage
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
+from coverage import render_coverage, render_to_array
 from env import EmeraldEnv
 
 N_ENVS = 8
 N_STEPS = 1024  # 8 x 1024 x (3x80x120 + 17) ~ 236MB rollout buffer
 
 
-def make_env():
+def make_env(max_steps: int):
     def _init():
-        return EmeraldEnv()
+        return EmeraldEnv(max_steps=max_steps)
     return _init
 
 
@@ -78,10 +80,65 @@ class ProgressCallback(BaseCallback):
         return True
 
 
+class CoverageCallback(BaseCallback):
+    """Renders where the agent has been, as a contact sheet of per-map grids.
+
+    Unions every worker's coverage set, writes media/coverage_<step>.png, and
+    logs the same image to TensorBoard so exploration can be watched spreading
+    live in the Images tab rather than by opening files.
+    """
+
+    def __init__(self, every: int = 50_000, media_dir: str = "media"):
+        super().__init__()
+        self.every = every
+        self.media_dir = Path(media_dir)
+        self.media_dir.mkdir(exist_ok=True)
+        self._next_at = every
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps < self._next_at:
+            return True
+        self._next_at += self.every
+
+        tiles: set[tuple[int, int, int, int]] = set()
+        for worker_tiles in self.training_env.env_method("coverage"):
+            tiles.update(worker_tiles)
+        if not tiles:
+            return True
+
+        path = self.media_dir / f"coverage_{self.num_timesteps:09d}.png"
+        render_coverage(sorted(tiles), path)
+        # channels-last uint8; SB3's Image wants the dataformats spelled out
+        self.logger.record(
+            "coverage/map",
+            TBImage(render_to_array(sorted(tiles)), "HWC"),
+            exclude=("stdout", "log", "json", "csv"),
+        )
+        self.logger.record("coverage/unique_tiles", float(len(tiles)))
+        print(f"coverage: {len(tiles)} tiles at {self.num_timesteps} steps -> {path}")
+        return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=50_000_000)
     parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--coverage-every", type=int, default=50_000,
+                        help="steps between coverage renders")
+    parser.add_argument("--backbone", choices=("nature", "resnet18"), default="nature",
+                        help="nature: small CNN trained from scratch (default). "
+                             "resnet18: frozen ImageNet backbone")
+    parser.add_argument("--finetune", action="store_true",
+                        help="unfreeze the resnet18 backbone; needs far more VRAM")
+    parser.add_argument("--max-steps", type=int, default=16384,
+                        help="steps per episode before truncation. The design doc "
+                             "names this the first lever when training plateaus: "
+                             "the badge is ~50k steps out, so a 16k episode cannot "
+                             "reach it in one life")
+    parser.add_argument("--batch-size", type=int, default=128,
+                        help="PPO minibatch size. Smaller means more optimizer "
+                             "steps per rollout: better sample efficiency, lower "
+                             "throughput, less VRAM per step")
     args = parser.parse_args()
 
     # start_method explicit: SB3 defaults to "forkserver", which forks workers
@@ -91,17 +148,29 @@ def main():
     # VecMonitor: without it there is no rollout/ep_rew_mean or ep_len_mean in
     # TensorBoard, the one number that answers "is this learning" on a
     # multi-day run.
-    env = VecMonitor(SubprocVecEnv([make_env() for _ in range(N_ENVS)], start_method="fork"))
+    env = VecMonitor(SubprocVecEnv([make_env(args.max_steps) for _ in range(N_ENVS)], start_method="fork"))
 
     if args.resume:
         model = PPO.load(args.resume, env=env, tensorboard_log="runs")
         print(f"resumed from {args.resume}")
     else:
+        policy_kwargs = {}
+        if args.backbone == "resnet18":
+            # Imported here, not at module scope, so a `nature` run never pays for
+            # torchvision or pulls the ImageNet weights off disk.
+            from backbone import ResNetExtractor
+
+            policy_kwargs = {
+                "features_extractor_class": ResNetExtractor,
+                "features_extractor_kwargs": {"finetune": args.finetune},
+            }
+            print(f"backbone: resnet18 (finetune={args.finetune})")
+
         model = PPO(
             "MultiInputPolicy",  # handles Dict obs: CNN for screen, MLP for state
             env,
             n_steps=N_STEPS,
-            batch_size=512,
+            batch_size=args.batch_size,
             n_epochs=3,
             gamma=0.999,       # ~1k-step effective horizon. The badge is far beyond it,
                                # but the reward is dense by design (tile novelty pays
@@ -110,6 +179,7 @@ def main():
             ent_coef=0.01,     # keep exploring
             learning_rate=2.5e-4,
             tensorboard_log="runs",
+            policy_kwargs=policy_kwargs,
             verbose=1,
         )
 
@@ -120,6 +190,7 @@ def main():
             name_prefix="emerald",
         ),
         ProgressCallback(),
+        CoverageCallback(every=args.coverage_every),
     ]
 
     model.learn(total_timesteps=args.steps, callback=callbacks,

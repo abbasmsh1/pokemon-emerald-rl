@@ -26,12 +26,58 @@ def test_reset_is_deterministic():
     print("test_reset_is_deterministic PASSED")
 
 
-def test_action_space_is_seven_discrete():
+def test_action_space_is_eight_discrete():
+    """start is index 7; indices 0-6 must keep their original meaning."""
     env = EmeraldEnv()
-    assert env.action_space.n == 7
-    assert len(EmeraldEnv.ACTIONS) == 7
+    assert env.action_space.n == 8
+    assert len(EmeraldEnv.ACTIONS) == 8
+    assert EmeraldEnv.ACTIONS == [None, "up", "down", "left", "right", "A", "B", "start"]
+    assert EmeraldEnv.ACTIONS[5] == "A", "index 5 must stay A; tests rely on it"
     env.close()
-    print("test_action_space_is_seven_discrete PASSED")
+    print("test_action_space_is_eight_discrete PASSED")
+
+
+def test_stall_penalty_charges_after_limit():
+    """Going STALL_LIMIT steps without earning anything must cost something."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+
+    # a state that earns nothing: same map, already-visited tile, no deltas
+    env._compute_reward(s)
+    env._steps_since_reward = 0
+
+    charged = None
+    for i in range(EmeraldEnv.STALL_LIMIT + 2):
+        r = env._compute_reward(s)
+        if r < 0:
+            charged = i + 1
+            break
+
+    assert charged == EmeraldEnv.STALL_LIMIT, (
+        f"stall charged at step {charged}, expected {EmeraldEnv.STALL_LIMIT}"
+    )
+    assert env._steps_since_reward == 0, "counter must reset after charging"
+    env.close()
+    print("test_stall_penalty_charges_after_limit PASSED")
+
+
+def test_progress_resets_the_stall_counter():
+    """Any positive reward must clear the stall counter."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._steps_since_reward = EmeraldEnv.STALL_LIMIT - 1
+
+    env._visited_tiles.clear()
+    env._visited_maps.clear()
+    env._tiles_per_map.clear()
+    r = env._compute_reward(s)
+
+    assert r > 0, f"expected new-map/new-tile reward, got {r}"
+    assert env._steps_since_reward == 0, "progress did not reset the counter"
+    env.close()
+    print("test_progress_resets_the_stall_counter PASSED")
 
 
 def test_step_returns_valid_transition():
@@ -280,11 +326,13 @@ def test_repeated_press_registers_multiple_times():
 
 
 if __name__ == "__main__":
-    test_action_space_is_seven_discrete()
+    test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
     test_reset_is_deterministic()
     test_step_returns_valid_transition()
     test_frame_stack_advances()
+    test_stall_penalty_charges_after_limit()
+    test_progress_resets_the_stall_counter()
     test_state_vector_does_not_saturate()
     test_new_tile_rewards_once()
     test_tile_reward_capped_per_map()
