@@ -22,3 +22,6 @@ memwatch.csv
 archive_7action/
 archive_8action/
 archive_rn512/
+watchdog.sh
+watchdog.log
+archive_42M/

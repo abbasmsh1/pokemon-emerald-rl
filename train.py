@@ -30,9 +30,9 @@ N_ENVS = 8
 N_STEPS = 1024  # 8 x 1024 x (3x80x120 + 17) ~ 236MB rollout buffer
 
 
-def make_env():
+def make_env(max_steps: int):
     def _init():
-        return EmeraldEnv()
+        return EmeraldEnv(max_steps=max_steps)
     return _init
 
 
@@ -130,6 +130,11 @@ def main():
                              "resnet18: frozen ImageNet backbone")
     parser.add_argument("--finetune", action="store_true",
                         help="unfreeze the resnet18 backbone; needs far more VRAM")
+    parser.add_argument("--max-steps", type=int, default=16384,
+                        help="steps per episode before truncation. The design doc "
+                             "names this the first lever when training plateaus: "
+                             "the badge is ~50k steps out, so a 16k episode cannot "
+                             "reach it in one life")
     parser.add_argument("--batch-size", type=int, default=128,
                         help="PPO minibatch size. Smaller means more optimizer "
                              "steps per rollout: better sample efficiency, lower "
@@ -143,7 +148,7 @@ def main():
     # VecMonitor: without it there is no rollout/ep_rew_mean or ep_len_mean in
     # TensorBoard, the one number that answers "is this learning" on a
     # multi-day run.
-    env = VecMonitor(SubprocVecEnv([make_env() for _ in range(N_ENVS)], start_method="fork"))
+    env = VecMonitor(SubprocVecEnv([make_env(args.max_steps) for _ in range(N_ENVS)], start_method="fork"))
 
     if args.resume:
         model = PPO.load(args.resume, env=env, tensorboard_log="runs")
