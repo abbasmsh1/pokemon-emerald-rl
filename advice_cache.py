@@ -93,9 +93,11 @@ class AdviceCache:
             row = self._conn.execute(
                 "SELECT action FROM advice WHERE text = ?", (normalise(text),)
             ).fetchone()
-        except Exception:
+        except sqlite3.Error:
             self._mark_broken()
             return NO_ADVICE
+        except Exception:
+            return NO_ADVICE  # not a database fault
         return row[0] if row else NO_ADVICE
 
     def enqueue(self, text: str) -> None:
@@ -117,10 +119,13 @@ class AdviceCache:
             )
             self._conn.commit()
             self._enqueued.add(key)
-        except Exception as exc:
-            if _is_contention(exc):
-                return  # dropped; the text will be seen again next step
-            self._mark_broken()
+        except sqlite3.Error as exc:
+            # contention: dropped; the text will be seen again next step
+            if not _is_contention(exc):
+                self._mark_broken()
+        except Exception:
+            # Not a database fault. Drop the call rather than disabling advice.
+            return
 
     def pending(self, limit: int = 32) -> list[str]:
         if not self._usable():
@@ -135,17 +140,27 @@ class AdviceCache:
         return [r[0] for r in rows]
 
     def put(self, text: str, action: int) -> None:
-        if not isinstance(text, str) or not text or not self._usable():
+        if not isinstance(text, str) or not text:
+            return
+        try:
+            action = int(action)
+        except (TypeError, ValueError):
+            # A bad action is the caller's bug, not a broken database. Dropping
+            # it is right; disabling advice for 60s is not.
+            return
+        if not self._usable():
             return
         try:
             key = normalise(text)
             self._conn.execute(
                 "INSERT OR REPLACE INTO advice (text, action) VALUES (?, ?)",
-                (key, int(action)),
+                (key, action),
             )
             self._conn.execute("DELETE FROM queue WHERE text = ?", (key,))
             self._conn.commit()
-        except Exception as exc:
-            if _is_contention(exc):
-                return
-            self._mark_broken()
+        except sqlite3.Error as exc:
+            if not _is_contention(exc):
+                self._mark_broken()
+        except Exception:
+            # Not a database fault. Drop the call rather than disabling advice.
+            return

@@ -132,6 +132,12 @@ def test_non_str_input_never_raises():
         assert c.lookup("still works") == NO_ADVICE
         c.put("still works", 2)
         assert c.lookup("still works") == 2, "bad input broke a healthy cache"
+
+        # A bad action must not disable the cache either
+        c.put("good text", "not an int")
+        c.put("good text", None)
+        c.put("another line", 3)
+        assert c.lookup("another line") == 3, "a bad action broke a healthy cache"
     print("test_non_str_input_never_raises PASSED")
 
 
