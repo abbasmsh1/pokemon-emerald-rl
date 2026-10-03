@@ -106,6 +106,56 @@ def test_section_reward_is_gated_on_stability():
     print("test_section_reward_is_gated_on_stability PASSED")
 
 
+def test_whiteout_does_not_end_the_episode():
+    """A whiteout warps the player to a Pokemon Center healed; it is not death.
+
+    Ending the episode on it discarded all exploration and restarted from
+    Littleroot, which is why ep_len_mean sat at 18,300 against a 65,536 cap.
+    """
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    whited = dict(s, badges=0, whiteout=True)
+    assert env._should_terminate(whited, True) is False, (
+        "whiteout still ends the episode"
+    )
+    env.close()
+    print("test_whiteout_does_not_end_the_episode PASSED")
+
+
+def test_whiteout_still_costs_the_penalty():
+    """Not fatal must not mean free."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = dict(s, whiteout=False)
+    env._visited_tiles.clear()
+    env._visited_maps.clear()
+    env._visited_sections.clear()
+    env._tiles_per_map.clear()
+
+    before = env._compute_reward(dict(s, whiteout=False))
+    env._prev = dict(s, whiteout=False)
+    after = env._compute_reward(dict(s, whiteout=True))
+
+    assert after < before, f"whiteout was free: {after} vs {before}"
+    assert after - before <= EmeraldEnv.WHITEOUT_PENALTY + 1e-6, (
+        f"whiteout cost {after - before}, expected {EmeraldEnv.WHITEOUT_PENALTY}"
+    )
+    env.close()
+    print("test_whiteout_still_costs_the_penalty PASSED")
+
+
+def test_badge_still_ends_the_episode():
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    assert env._should_terminate(dict(s, badges=1), True) is True
+    assert env._should_terminate(dict(s, badges=0), True) is False
+    env.close()
+    print("test_badge_still_ends_the_episode PASSED")
+
+
 def test_stall_penalty_charges_after_limit():
     """Going STALL_LIMIT steps without earning anything must cost something."""
     env = EmeraldEnv()
@@ -412,6 +462,9 @@ if __name__ == "__main__":
     test_section_boundary_is_section_size_tiles()
     test_sections_clear_on_reset()
     test_section_reward_is_gated_on_stability()
+    test_whiteout_does_not_end_the_episode()
+    test_whiteout_still_costs_the_penalty()
+    test_badge_still_ends_the_episode()
     test_stall_penalty_charges_after_limit()
     test_progress_resets_the_stall_counter()
     test_state_vector_does_not_saturate()

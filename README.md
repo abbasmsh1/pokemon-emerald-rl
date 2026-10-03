@@ -58,7 +58,7 @@ flag exists to answer.
 | Trainer defeated | +2 |
 | Party level gained | +0.2 |
 | Pokemon seen / caught | +0.1 / +0.5 |
-| Whiteout | -5, ends episode |
+| Whiteout | -5 (does not end the episode) |
 | 5,000 steps earning nothing | -1 |
 
 The per-map tile cap stops the agent farming reward by pacing across a large
@@ -67,7 +67,11 @@ pacing inside one earns nothing after the first step in, so the signal rewards
 direction rather than shuffling, and unlike tile novelty it is not exhausted by
 the per-map cap.
 
-**Episodes** start from a savestate captured after the intro and end on a badge, a whiteout, or 16,384 steps.
+**Episodes** start from a savestate captured after the intro and end on a badge
+or at the step cap. A whiteout is deliberately not fatal: in this game it warps
+the player to a Pokemon Center with a healed party and play continues. Ending
+the episode on it discarded all accumulated exploration, and measurement showed
+every episode was ending that way at ~18,300 steps against a 65,536 cap.
 
 ## Layout
 

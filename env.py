@@ -251,7 +251,20 @@ class EmeraldEnv(gym.Env):
         return reward
 
     def _should_terminate(self, s: dict, stable: bool) -> bool:
-        return bool(stable and (s["badges"] >= 1 or s["whiteout"]))
+        """Only the badge ends an episode.
+
+        A whiteout is not death in this game: it warps the player to the last
+        Pokemon Center with a healed party and play continues. Ending the episode
+        on it was our invention, and an expensive one. Measured at 42.5M steps,
+        ep_len_mean sat at 18,300 against a 65,536 cap with no badges earned, so
+        every episode was ending this way, discarding all accumulated exploration
+        and restarting from Littleroot. The agent therefore never experienced
+        recovery and could not learn it.
+
+        The -5 WHITEOUT_PENALTY still applies, so whiting out is costly; it is
+        just no longer fatal.
+        """
+        return bool(stable and s["badges"] >= 1)
 
     def _info(self, s: dict) -> dict:
         return {
