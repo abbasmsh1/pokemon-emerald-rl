@@ -37,6 +37,75 @@ def test_action_space_is_eight_discrete():
     print("test_action_space_is_eight_discrete PASSED")
 
 
+def test_new_section_pays_once():
+    """A section pays on first entry and never again that episode."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._visited_sections.clear()
+
+    first = env._compute_reward(s)
+    second = env._compute_reward(s)
+    assert first - second >= EmeraldEnv.NEW_SECTION_REWARD - 1e-9, (
+        f"section bonus not paid on first entry: {first} then {second}"
+    )
+    assert len(env._visited_sections) == 1
+    env.close()
+    print("test_new_section_pays_once PASSED")
+
+
+def test_section_boundary_is_section_size_tiles():
+    """Moving one tile stays in the section; moving SECTION_SIZE crosses it."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._visited_sections.clear()
+    env._visited_tiles.clear()
+    env._tiles_per_map.clear()
+    env._visited_maps.clear()
+
+    base = dict(s, pos=(0, 0))
+    env._compute_reward(base)
+    assert len(env._visited_sections) == 1
+
+    env._compute_reward(dict(s, pos=(1, 0)))
+    assert len(env._visited_sections) == 1, "one tile should not cross a section"
+
+    env._compute_reward(dict(s, pos=(EmeraldEnv.SECTION_SIZE, 0)))
+    assert len(env._visited_sections) == 2, "SECTION_SIZE tiles should cross one"
+    env.close()
+    print("test_section_boundary_is_section_size_tiles PASSED")
+
+
+def test_sections_clear_on_reset():
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    for x in range(0, 40, EmeraldEnv.SECTION_SIZE):
+        env._compute_reward(dict(s, pos=(x, 0)))
+    assert len(env._visited_sections) > 1
+    env.reset()
+    assert env._visited_sections == set(), "sections survived a reset"
+    env.close()
+    print("test_sections_clear_on_reset PASSED")
+
+
+def test_section_reward_is_gated_on_stability():
+    """An in-flight read must not register a section, same as every other term."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._visited_sections.clear()
+    env._prev = dict(s, map=(0, 9))
+
+    garbage = dict(s, map=(0, 0), pos=(65535, 65535))
+    r = env._compute_reward(garbage)
+    assert r == 0.0, f"in-flight step paid {r}"
+    assert env._visited_sections == set(), "garbage read recorded a section"
+    env.close()
+    print("test_section_reward_is_gated_on_stability PASSED")
+
+
 def test_stall_penalty_charges_after_limit():
     """Going STALL_LIMIT steps without earning anything must cost something."""
     env = EmeraldEnv()
@@ -181,10 +250,18 @@ def test_implausible_flag_delta_scores_zero():
     env._visited_tiles.clear()
     env._tiles_per_map.clear()
     env._visited_maps.clear()
+    env._visited_sections.clear()
     r = env._compute_reward(spike)
+    # The exploration terms may legitimately fire here; the flag spike must not.
+    exploration_ceiling = (
+        EmeraldEnv.NEW_MAP_REWARD
+        + EmeraldEnv.NEW_TILE_REWARD
+        + EmeraldEnv.NEW_SECTION_REWARD
+    )
     assert r < EmeraldEnv.BADGE_REWARD, f"transient paid {r}, more than a badge"
-    assert r <= EmeraldEnv.NEW_MAP_REWARD + EmeraldEnv.NEW_TILE_REWARD + 1e-6, (
-        f"transient paid {r}, expected only map+tile"
+    assert r <= exploration_ceiling + 1e-6, (
+        f"transient paid {r}, above the map+tile+section ceiling "
+        f"{exploration_ceiling}; the flag spike was paid"
     )
     env.close()
     print("test_implausible_flag_delta_scores_zero PASSED")
@@ -331,6 +408,10 @@ if __name__ == "__main__":
     test_reset_is_deterministic()
     test_step_returns_valid_transition()
     test_frame_stack_advances()
+    test_new_section_pays_once()
+    test_section_boundary_is_section_size_tiles()
+    test_sections_clear_on_reset()
+    test_section_reward_is_gated_on_stability()
     test_stall_penalty_charges_after_limit()
     test_progress_resets_the_stall_counter()
     test_state_vector_does_not_saturate()

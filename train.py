@@ -58,11 +58,13 @@ class ProgressCallback(BaseCallback):
     def _on_step(self) -> bool:
         best_badges = 0
         best_tiles = 0
+        best_sections = 0
         for i, info in enumerate(self.locals.get("infos", [])):
             if "maps_visited" not in info:
                 continue
             best_badges = max(best_badges, info["badges"])
             best_tiles = max(best_tiles, info["tiles_visited"])
+            best_sections = max(best_sections, info.get("sections_visited", 0))
             if info["maps_visited"] > self.best_maps_visited:
                 self.best_maps_visited = info["maps_visited"]
                 n = self.best_maps_visited
@@ -76,6 +78,7 @@ class ProgressCallback(BaseCallback):
 
         self.logger.record("progress/badges", best_badges)
         self.logger.record("progress/tiles_visited", best_tiles)
+        self.logger.record("progress/sections_visited", best_sections)
         self.logger.record("progress/maps_visited", float(self.best_maps_visited))
         return True
 

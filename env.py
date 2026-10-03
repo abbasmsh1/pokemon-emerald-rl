@@ -62,6 +62,12 @@ class EmeraldEnv(gym.Env):
     BADGE_REWARD = 100.0
     NEW_MAP_REWARD = 2.0
     NEW_TILE_REWARD = 0.05
+    # Each map is diced into SECTION_SIZE-square blocks. Sits between the tile and
+    # map terms: pacing inside one block earns nothing after the first step into
+    # it, so this rewards direction rather than shuffling between adjacent tiles,
+    # and unlike tile novelty it is not exhausted by the per-map cap.
+    SECTION_SIZE = 8
+    NEW_SECTION_REWARD = 0.5
     SCRIPT_FLAG_REWARD = 1.0
     TRAINER_REWARD = 2.0
     LEVEL_REWARD = 0.2
@@ -103,6 +109,7 @@ class EmeraldEnv(gym.Env):
         self._step_count = 0
         self._visited_tiles: set[tuple[int, int, int, int]] = set()
         self._visited_maps: set[tuple[int, int]] = set()
+        self._visited_sections: set[tuple[int, int, int, int]] = set()
         self._tiles_per_map: dict[tuple[int, int], int] = {}
         self._prev: dict | None = None
         self._flag_baseline: dict[str, int] | None = None
@@ -185,6 +192,16 @@ class EmeraldEnv(gym.Env):
                 self._tiles_per_map[map_key] = count + 1
                 reward += self.NEW_TILE_REWARD
 
+        section_key = (
+            map_key[0],
+            map_key[1],
+            s["pos"][0] // self.SECTION_SIZE,
+            s["pos"][1] // self.SECTION_SIZE,
+        )
+        if section_key not in self._visited_sections:
+            self._visited_sections.add(section_key)
+            reward += self.NEW_SECTION_REWARD
+
         if prev is not None:
             reward += self.BADGE_REWARD * max(0, s["badges"] - prev["badges"])
 
@@ -241,6 +258,7 @@ class EmeraldEnv(gym.Env):
             "badges": s["badges"],
             "maps_visited": len(self._visited_maps),
             "tiles_visited": len(self._visited_tiles),
+            "sections_visited": len(self._visited_sections),
             "map": s["map"],
         }
 
@@ -260,6 +278,7 @@ class EmeraldEnv(gym.Env):
 
         self._visited_tiles.clear()
         self._visited_maps.clear()
+        self._visited_sections.clear()
         self._tiles_per_map.clear()
 
         self.state_reader.reset()

@@ -53,6 +53,7 @@ flag exists to answer.
 | Gym badge | +100 |
 | New map entered | +2 |
 | New tile visited | +0.05, capped at 400/map |
+| New 8x8 section entered | +0.5 |
 | Script event flag set | +1 |
 | Trainer defeated | +2 |
 | Party level gained | +0.2 |
@@ -60,7 +61,11 @@ flag exists to answer.
 | Whiteout | -5, ends episode |
 | 5,000 steps earning nothing | -1 |
 
-The per-map tile cap stops the agent farming reward by pacing across a large route.
+The per-map tile cap stops the agent farming reward by pacing across a large
+route. Sections are 8x8 tile blocks, sitting between the tile and map terms:
+pacing inside one earns nothing after the first step in, so the signal rewards
+direction rather than shuffling, and unlike tile novelty it is not exhausted by
+the per-map cap.
 
 **Episodes** start from a savestate captured after the intro and end on a badge, a whiteout, or 16,384 steps.
 
