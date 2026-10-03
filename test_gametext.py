@@ -1,36 +1,21 @@
 """Assertion-based checks for game text extraction. No framework."""
 
-from pygba import PyGBA
-
-from env import suppress_stdout
-from gametext import MESSAGE_ADDR, normalise, read_message
-
-ROM = "Pokemon - Emerald Version (USA, Europe).gba"
+from gametext import MESSAGE_ADDR, normalise, decode_at, MAX_LEN
 
 
-def _booted():
-    """A savestate with free player control and no dialogue showing."""
-    with suppress_stdout():
-        gba = PyGBA.load(ROM)
-        gba.core.reset()
-        gba.core.load_raw_state(open("boot.state", "rb").read())
-        gba.core.run_frame()
-    return gba
+class _StubGBA:
+    """Feeds decode_at exact bytes, so these tests pin behaviour rather
+    than whatever the emulator happens to hold."""
+    def __init__(self, data: bytes):
+        self._data = data
+    def read_memory(self, addr, size):
+        return (self._data + b"\xff" * size)[:size]
 
 
 def test_address_is_the_measured_one():
     """Pinned by measurement; a silent change would break every cache key."""
     assert MESSAGE_ADDR == 0x02021FC4
     print("test_address_is_the_measured_one PASSED")
-
-
-def test_read_message_returns_str_or_none():
-    gba = _booted()
-    msg = read_message(gba)
-    assert msg is None or isinstance(msg, str)
-    if msg is not None:
-        assert "\x00" not in msg, "raw terminator leaked into the text"
-    print(f"test_read_message_returns_str_or_none PASSED ({msg!r})")
 
 
 def test_normalise_collapses_whitespace_and_breaks():
@@ -42,36 +27,56 @@ def test_normalise_collapses_whitespace_and_breaks():
     print("test_normalise_collapses_whitespace_and_breaks PASSED")
 
 
-def test_normalise_handles_non_ascii_without_raising():
-    """Review Focus 1. The real buffer contains POKeMON with an accent and a
-    typographic apostrophe; neither may raise or produce replacement junk."""
-    raw = "The mover's POKéMON do all the work"
-    out = normalise(raw)
-    assert out, "non-ascii text normalised to nothing"
-    assert "�" not in out, "replacement character leaked into the key"
-    print("test_normalise_handles_non_ascii_without_raising PASSED")
+def test_control_byte_becomes_a_separator():
+    # 0xD5='a', 0xD6='b', 0xFB=U+FFFD (control), 0xD7='c', 0xD8='d'
+    # "ab" 0xFB "cd" -> the line break must not fuse the words
+    from gametext import CONTROL_BYTES
+    data = bytes([0xD5, 0xD6, 0xFB, 0xD7, 0xD8, 0xFF])
+    out = decode_at(_StubGBA(data), 0)
+    assert out is not None, "valid text was rejected"
+    assert "�" not in out, f"replacement char reached the key: {out!r}"
+    assert " " in out, f"control byte did not separate words: {out!r}"
+    print("test_control_byte_becomes_a_separator PASSED")
 
 
-def test_garbage_buffer_reads_as_none():
-    """Review Focus 2. During a map transition the buffer parses as garbage.
+def test_unterminated_read_returns_none():
+    from gametext import MAX_LEN, decode_at
+    data = bytes([0xD5]) * (MAX_LEN + 10)   # no 0xFF anywhere
+    assert decode_at(_StubGBA(data), 0) is None, "truncated text became a key"
+    print("test_unterminated_read_returns_none PASSED")
 
-    Simulated by reading an address that holds non-text data; the function must
-    return None rather than a nonsense string that would pollute the cache.
-    """
-    gba = _booted()
+
+def test_kana_is_rejected_as_graphics():
     from gametext import decode_at
+    # 0x2F is 'あ' in the charmap: kana here means we decoded graphics
+    data = bytes([0x2F] * 12 + [0xFF])
+    assert decode_at(_StubGBA(data), 0) is None, "kana soup became a key"
+    print("test_kana_is_rejected_as_graphics PASSED")
 
-    junk = decode_at(gba, 0x03000000)
-    assert junk is None or len(junk) == 0 or not junk.strip(), (
-        f"non-text region decoded to {junk!r}, which would become a cache key"
-    )
-    print("test_garbage_buffer_reads_as_none PASSED")
+
+def test_short_real_dialogue_is_kept():
+    from gametext import decode_at
+    # "Okay!" (0xC9='O', 0xDF='k', 0xD5='a', 0xED='y', 0xAB='!') must survive
+    data = bytes([0xC9, 0xDF, 0xD5, 0xED, 0xAB, 0xFF])
+    out = decode_at(_StubGBA(data), 0)
+    assert out is not None, "short real dialogue was rejected"
+    print("test_short_real_dialogue_is_kept PASSED")
+
+
+def test_typographic_apostrophe_is_folded():
+    from gametext import normalise
+    out = normalise("It’s a POKéMON")
+    assert "’" not in out, f"typographic apostrophe survived: {out!r}"
+    assert "'" in out, f"apostrophe lost entirely: {out!r}"
+    print("test_typographic_apostrophe_is_folded PASSED")
 
 
 if __name__ == "__main__":
     test_address_is_the_measured_one()
     test_normalise_collapses_whitespace_and_breaks()
-    test_normalise_handles_non_ascii_without_raising()
-    test_read_message_returns_str_or_none()
-    test_garbage_buffer_reads_as_none()
+    test_control_byte_becomes_a_separator()
+    test_unterminated_read_returns_none()
+    test_kana_is_rejected_as_graphics()
+    test_short_real_dialogue_is_kept()
+    test_typographic_apostrophe_is_folded()
     print("\nall gametext tests passed")
