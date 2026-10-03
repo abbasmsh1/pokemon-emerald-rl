@@ -98,7 +98,12 @@ class AdviceCache:
             return NO_ADVICE
         except Exception:
             return NO_ADVICE  # not a database fault
-        return row[0] if row else NO_ADVICE
+        if not row:
+            return NO_ADVICE
+        action = row[0]
+        # A cache file written by an older or buggier version must not be able
+        # to crash a current run.
+        return action if isinstance(action, int) and 0 <= action <= NO_ADVICE else NO_ADVICE
 
     def enqueue(self, text: str) -> None:
         if not isinstance(text, str) or not text:
@@ -144,9 +149,14 @@ class AdviceCache:
             return
         try:
             action = int(action)
-        except (TypeError, ValueError):
+        except Exception:
             # A bad action is the caller's bug, not a broken database. Dropping
-            # it is right; disabling advice for 60s is not.
+            # it is right; disabling advice for 60s, or raising into the
+            # training step loop, is not.
+            return
+        if not 0 <= action <= NO_ADVICE:
+            # Out-of-range values become an IndexError in the consumer's
+            # one-hot, or silently set the wrong slot if negative.
             return
         if not self._usable():
             return

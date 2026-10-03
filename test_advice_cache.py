@@ -138,6 +138,15 @@ def test_non_str_input_never_raises():
         c.put("good text", None)
         c.put("another line", 3)
         assert c.lookup("another line") == 3, "a bad action broke a healthy cache"
+
+        c.put("inf action", float("inf"))
+        c.put("nan action", float("nan"))
+        c.put("huge action", 99)
+        c.put("negative action", -3)
+        assert c.lookup("huge action") == NO_ADVICE, "out-of-range action was stored"
+        assert c.lookup("negative action") == NO_ADVICE, "negative action was stored"
+        c.put("final check", 7)
+        assert c.lookup("final check") == 7, "guards broke a healthy cache"
     print("test_non_str_input_never_raises PASSED")
 
 
@@ -198,6 +207,38 @@ def test_already_answered_text_is_not_queued():
     print("test_already_answered_text_is_not_queued PASSED")
 
 
+def test_write_contention_does_not_kill_the_read_path():
+    """A busy database is not a broken one.
+
+    Round 3 made enqueue/put drop on contention instead of marking the cache
+    broken, because a write-lock timeout was costing that worker its lookup
+    for 60s even though WAL reads never block.
+    """
+    import sqlite3
+
+    import advice_cache
+
+    with tempfile.TemporaryDirectory() as d:
+        path = str(Path(d) / "a.db")
+        c = AdviceCache(path)
+        c.put("readable line", 5)
+
+        original = advice_cache.BUSY_TIMEOUT
+        advice_cache.BUSY_TIMEOUT = 0.05
+        blocker = sqlite3.connect(path, timeout=0.05)
+        try:
+            blocker.execute("BEGIN EXCLUSIVE")
+            c.enqueue("something new while locked")
+            assert c.lookup("readable line") == 5, (
+                "a write-lock timeout disabled the read path"
+            )
+        finally:
+            blocker.rollback()
+            blocker.close()
+            advice_cache.BUSY_TIMEOUT = original
+    print("test_write_contention_does_not_kill_the_read_path PASSED")
+
+
 if __name__ == "__main__":
     test_miss_returns_no_advice()
     test_put_then_lookup_returns_action()
@@ -213,4 +254,5 @@ if __name__ == "__main__":
     test_queue_is_bounded()
     test_overlong_text_is_not_queued()
     test_already_answered_text_is_not_queued()
+    test_write_contention_does_not_kill_the_read_path()
     print("\nall advice cache tests passed")
