@@ -124,6 +124,32 @@ def test_env_records_coverage_only_on_stable_reads():
     print("test_env_records_coverage_only_on_stable_reads PASSED")
 
 
+def test_callback_does_not_fire_every_step_after_resume():
+    """Resuming starts num_timesteps in the millions.
+
+    _next_at used to initialise to `every`, so on resume the callback fired,
+    bumped by `every`, was still far behind, and fired again on the next step.
+    It wrote 1,027 renders before catching up.
+    """
+    from train import CoverageCallback
+
+    cb = CoverageCallback(every=250_000)
+    assert cb._next_at is None, "schedule must be set on the first step, not in __init__"
+
+    cb.num_timesteps = 43_600_000
+    assert cb._on_step() is True
+    assert cb._next_at == 43_850_000, f"first step scheduled {cb._next_at}"
+
+    # The next 250k steps must not render.
+    fired = 0
+    for step in range(43_600_008, 43_850_000, 8192):
+        cb.num_timesteps = step
+        if step >= cb._next_at:
+            fired += 1
+    assert fired == 0, f"callback would fire {fired} times before its interval"
+    print("test_callback_does_not_fire_every_step_after_resume PASSED")
+
+
 def test_env_coverage_is_uncapped_and_survives_reset():
     """The regression this file exists for.
 
@@ -159,5 +185,6 @@ if __name__ == "__main__":
     test_garbage_coordinate_cannot_blow_up_the_panel()
     test_render_survives_a_garbage_coordinate()
     test_env_records_coverage_only_on_stable_reads()
+    test_callback_does_not_fire_every_step_after_resume()
     test_env_coverage_is_uncapped_and_survives_reset()
     print("\nall coverage tests passed")

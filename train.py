@@ -96,12 +96,19 @@ class CoverageCallback(BaseCallback):
         self.every = every
         self.media_dir = Path(media_dir)
         self.media_dir.mkdir(exist_ok=True)
-        self._next_at = every
+        # Set on the first step, not here. Resuming starts num_timesteps in the
+        # millions while this would start at `every`, so the callback fired,
+        # bumped by `every`, was still behind, and fired again every step --
+        # 1,027 renders before it caught up.
+        self._next_at: int | None = None
 
     def _on_step(self) -> bool:
+        if self._next_at is None:
+            self._next_at = self.num_timesteps + self.every
+            return True
         if self.num_timesteps < self._next_at:
             return True
-        self._next_at += self.every
+        self._next_at = self.num_timesteps + self.every
 
         tiles: set[tuple[int, int, int, int]] = set()
         for worker_tiles in self.training_env.env_method("coverage"):
