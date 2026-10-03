@@ -11,3 +11,17 @@ runs/
 checkpoints/
 tensorboard/
 *.log
+
+# Coverage renders are training output; force-add the ones worth keeping
+media/
+
+# Archived smoke-run artifacts
+archive_smoke/
+memwatch.sh
+memwatch.csv
+archive_7action/
+archive_8action/
+archive_rn512/
+watchdog.sh
+watchdog.log
+archive_42M/

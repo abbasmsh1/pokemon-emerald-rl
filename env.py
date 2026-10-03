@@ -1,6 +1,7 @@
 """Gymnasium environment for Pokemon Emerald on mGBA."""
 
 import contextlib
+import ctypes
 import os
 from collections import deque
 
@@ -17,15 +18,25 @@ SCREEN_SHAPE = (3, 80, 120)
 STATE_SIZE = 17
 
 
+_LIBC = ctypes.CDLL(None)
+
+
 @contextlib.contextmanager
 def suppress_stdout():
-    """mGBA logs from C at fd 1. Python-level redirection does not catch it."""
+    """mGBA logs from C at fd 1. Python-level redirection does not catch it.
+
+    The fflush is load-bearing, not tidiness. mGBA writes into libc's stdout
+    FILE buffer, and dup2 swaps the descriptor but not the buffer, so anything
+    still buffered flushes after fd 1 is restored and lands in the caller's
+    output. Flushing while fd 1 still points at /dev/null sends it there.
+    """
     devnull = os.open(os.devnull, os.O_WRONLY)
     saved = os.dup(1)
     try:
         os.dup2(devnull, 1)
         yield
     finally:
+        _LIBC.fflush(None)
         os.dup2(saved, 1)
         os.close(saved)
         os.close(devnull)
@@ -36,7 +47,10 @@ class EmeraldEnv(gym.Env):
 
     # No in-battle flag: pygba exposes no battle address, and a full-screen
     # battle is trivially visible to the CNN given the 3-frame stack.
-    ACTIONS = [None, "up", "down", "left", "right", "A", "B"]
+    # start is appended rather than replacing the no-op so indices 0-6 keep their
+    # meaning. It unlocks the menu, so the agent can use items and heal instead of
+    # only walking, talking and fighting with whatever move the cursor lands on.
+    ACTIONS = [None, "up", "down", "left", "right", "A", "B", "start"]
 
     TILE_CAP_PER_MAP = 400
 
@@ -48,12 +62,24 @@ class EmeraldEnv(gym.Env):
     BADGE_REWARD = 100.0
     NEW_MAP_REWARD = 2.0
     NEW_TILE_REWARD = 0.05
+    # Each map is diced into SECTION_SIZE-square blocks. Sits between the tile and
+    # map terms: pacing inside one block earns nothing after the first step into
+    # it, so this rewards direction rather than shuffling between adjacent tiles,
+    # and unlike tile novelty it is not exhausted by the per-map cap.
+    SECTION_SIZE = 8
+    NEW_SECTION_REWARD = 0.5
     SCRIPT_FLAG_REWARD = 1.0
     TRAINER_REWARD = 2.0
     LEVEL_REWARD = 0.2
     SEEN_REWARD = 0.1
     CAUGHT_REWARD = 0.5
     WHITEOUT_PENALTY = -5.0
+
+    # Charged every STALL_LIMIT steps that earn nothing at all. At 16,384 steps an
+    # episode can absorb at most three of these, so it nudges away from idling
+    # without overwhelming a +100 badge or the dense novelty signal.
+    STALL_LIMIT = 5000
+    STALL_PENALTY = -1.0
 
     def __init__(
         self,
@@ -83,10 +109,17 @@ class EmeraldEnv(gym.Env):
         self._step_count = 0
         self._visited_tiles: set[tuple[int, int, int, int]] = set()
         self._visited_maps: set[tuple[int, int]] = set()
+        self._visited_sections: set[tuple[int, int, int, int]] = set()
         self._tiles_per_map: dict[tuple[int, int], int] = {}
         self._prev: dict | None = None
         self._flag_baseline: dict[str, int] | None = None
         self._max_level_sum = 0
+        self._steps_since_reward = 0
+        # Reporting only, never used in reward. Deliberately uncapped and NOT
+        # cleared on reset: _visited_tiles is capped at TILE_CAP_PER_MAP to stop
+        # reward farming and resets each episode, so it would draw a truncated,
+        # single-episode picture. This accumulates the real footprint.
+        self._coverage: set[tuple[int, int, int, int]] = set()
 
         self.action_space = gym.spaces.Discrete(len(self.ACTIONS))
         self.observation_space = gym.spaces.Dict({
@@ -159,6 +192,16 @@ class EmeraldEnv(gym.Env):
                 self._tiles_per_map[map_key] = count + 1
                 reward += self.NEW_TILE_REWARD
 
+        section_key = (
+            map_key[0],
+            map_key[1],
+            s["pos"][0] // self.SECTION_SIZE,
+            s["pos"][1] // self.SECTION_SIZE,
+        )
+        if section_key not in self._visited_sections:
+            self._visited_sections.add(section_key)
+            reward += self.NEW_SECTION_REWARD
+
         if prev is not None:
             reward += self.BADGE_REWARD * max(0, s["badges"] - prev["badges"])
 
@@ -191,17 +234,44 @@ class EmeraldEnv(gym.Env):
             if s["whiteout"] and not prev["whiteout"]:
                 reward += self.WHITEOUT_PENALTY
 
+        # Stall penalty: charge for going STALL_LIMIT steps without earning
+        # anything. Novelty runs out once a map is fully walked, leaving the agent
+        # free to idle at zero reward forever; this makes standing still cost
+        # something. The counter resets on the charge as well as on progress, so a
+        # long stall is billed repeatedly rather than only once.
+        if reward > 0.0:
+            self._steps_since_reward = 0
+        else:
+            self._steps_since_reward += 1
+            if self._steps_since_reward >= self.STALL_LIMIT:
+                reward += self.STALL_PENALTY
+                self._steps_since_reward = 0
+
         self._prev = s
         return reward
 
     def _should_terminate(self, s: dict, stable: bool) -> bool:
-        return bool(stable and (s["badges"] >= 1 or s["whiteout"]))
+        """Only the badge ends an episode.
+
+        A whiteout is not death in this game: it warps the player to the last
+        Pokemon Center with a healed party and play continues. Ending the episode
+        on it was our invention, and an expensive one. Measured at 42.5M steps,
+        ep_len_mean sat at 18,300 against a 65,536 cap with no badges earned, so
+        every episode was ending this way, discarding all accumulated exploration
+        and restarting from Littleroot. The agent therefore never experienced
+        recovery and could not learn it.
+
+        The -5 WHITEOUT_PENALTY still applies, so whiting out is costly; it is
+        just no longer fatal.
+        """
+        return bool(stable and s["badges"] >= 1)
 
     def _info(self, s: dict) -> dict:
         return {
             "badges": s["badges"],
             "maps_visited": len(self._visited_maps),
             "tiles_visited": len(self._visited_tiles),
+            "sections_visited": len(self._visited_sections),
             "map": s["map"],
         }
 
@@ -221,6 +291,7 @@ class EmeraldEnv(gym.Env):
 
         self._visited_tiles.clear()
         self._visited_maps.clear()
+        self._visited_sections.clear()
         self._tiles_per_map.clear()
 
         self.state_reader.reset()
@@ -231,6 +302,7 @@ class EmeraldEnv(gym.Env):
             "trainer": s["trainer_flag_count"],
         }
         self._max_level_sum = sum(s["party_levels"])
+        self._steps_since_reward = 0
         return self._observation(s), self._info(s)
 
     def step(self, action: int):
@@ -259,6 +331,13 @@ class EmeraldEnv(gym.Env):
         # Ceiling: a genuine badge or whiteout landing exactly on a transition step
         # is recognised one step late.
         stable = self._prev is None or s["map"] == self._prev["map"]
+        if stable:
+            # ponytail: same in-flight read that fabricates badges also fabricates
+            # coordinates, and pos is uint16, so a garbage value up to 65535 lands
+            # in the coverage set. One bad x and one bad y on the same map made
+            # render_coverage allocate a 65528x65526 bounding box (12.9GB) and the
+            # kernel OOM-killed training twice. Only record stable readings.
+            self._coverage.add((s["map"][0], s["map"][1], s["pos"][0], s["pos"][1]))
         reward = self._compute_reward(s)
         terminated = self._should_terminate(s, stable)
         truncated = self._step_count >= self.max_steps
@@ -268,6 +347,11 @@ class EmeraldEnv(gym.Env):
         if self.render_mode == "rgb_array":
             return self._raw_frame().copy()
         return None
+
+    def coverage(self) -> list[tuple[int, int, int, int]]:
+        """Every (mapGroup, mapNum, x, y) this worker has stood on, across all
+        episodes. Retrieved across the process boundary with env_method."""
+        return list(self._coverage)
 
     def save_state(self) -> bytes:
         """Dump the emulator state. Used across process boundaries by the
