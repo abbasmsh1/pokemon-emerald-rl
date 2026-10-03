@@ -121,6 +121,77 @@ def test_unwritable_path_degrades_to_no_advice():
     print("test_unwritable_path_degrades_to_no_advice PASSED")
 
 
+def test_non_str_input_never_raises():
+    """Review found put(123, 1) raising TypeError out of a public method."""
+    with tempfile.TemporaryDirectory() as d:
+        c = AdviceCache(str(Path(d) / "a.db"))
+        for bad in (123, b"x", ["a"], None, 3.5):
+            assert c.lookup(bad) == NO_ADVICE
+            c.enqueue(bad)
+            c.put(bad, 1)
+        assert c.lookup("still works") == NO_ADVICE
+        c.put("still works", 2)
+        assert c.lookup("still works") == 2, "bad input broke a healthy cache"
+    print("test_non_str_input_never_raises PASSED")
+
+
+def test_put_deletes_by_normalised_key():
+    """The old fixture was normalise-identity, so it could not catch put
+    deleting by the raw text instead of the key."""
+    with tempfile.TemporaryDirectory() as d:
+        c = AdviceCache(str(Path(d) / "a.db"))
+        raw = "Hello   there,  TRAINER!"
+        c.enqueue(raw)
+        assert c.pending(), "enqueue stored nothing"
+        c.put(raw, 5)
+        assert not c.pending(), "put did not clear the queue row"
+    print("test_put_deletes_by_normalised_key PASSED")
+
+
+def test_enqueue_is_memoised_per_process():
+    with tempfile.TemporaryDirectory() as d:
+        c = AdviceCache(str(Path(d) / "a.db"))
+        for _ in range(50):
+            c.enqueue("same line over and over")
+        assert len(c.pending(1000)) == 1
+        assert len(c._enqueued) == 1
+    print("test_enqueue_is_memoised_per_process PASSED")
+
+
+def test_queue_is_bounded():
+    import advice_cache
+
+    with tempfile.TemporaryDirectory() as d:
+        c = AdviceCache(str(Path(d) / "a.db"))
+        original = advice_cache.MAX_QUEUE_ROWS
+        advice_cache.MAX_QUEUE_ROWS = 10
+        try:
+            for i in range(40):
+                c.enqueue(f"line number {i}")
+            assert len(c.pending(1000)) <= 10, "queue grew past its cap"
+        finally:
+            advice_cache.MAX_QUEUE_ROWS = original
+    print("test_queue_is_bounded PASSED")
+
+
+def test_overlong_text_is_not_queued():
+    with tempfile.TemporaryDirectory() as d:
+        c = AdviceCache(str(Path(d) / "a.db"))
+        c.enqueue("x" * 1000)
+        assert not c.pending(), "a 1000-character 'message' was queued"
+    print("test_overlong_text_is_not_queued PASSED")
+
+
+def test_already_answered_text_is_not_queued():
+    with tempfile.TemporaryDirectory() as d:
+        path = str(Path(d) / "a.db")
+        AdviceCache(path).put("known line", 6)
+        c = AdviceCache(path)  # fresh process-equivalent, empty memo
+        c.enqueue("known line")
+        assert not c.pending(), "queued text the advisor had already answered"
+    print("test_already_answered_text_is_not_queued PASSED")
+
+
 if __name__ == "__main__":
     test_miss_returns_no_advice()
     test_put_then_lookup_returns_action()
@@ -130,4 +201,10 @@ if __name__ == "__main__":
     test_broken_cache_recovers_after_backoff()
     test_corrupt_db_degrades_to_no_advice()
     test_unwritable_path_degrades_to_no_advice()
+    test_non_str_input_never_raises()
+    test_put_deletes_by_normalised_key()
+    test_enqueue_is_memoised_per_process()
+    test_queue_is_bounded()
+    test_overlong_text_is_not_queued()
+    test_already_answered_text_is_not_queued()
     print("\nall advice cache tests passed")

@@ -24,6 +24,17 @@ RETRY_SECONDS = 60.0
 # proves nothing.
 BUSY_TIMEOUT = 5.0
 
+MAX_QUEUE_ROWS = 5000
+MAX_TEXT_LEN = 300  # a longer "message" is not dialogue
+
+
+def _is_contention(exc: Exception) -> bool:
+    """A busy database is not a broken one. Readers must survive a writer
+    holding the lock, which under WAL they otherwise always do."""
+    return isinstance(exc, sqlite3.OperationalError) and (
+        "locked" in str(exc).lower() or "busy" in str(exc).lower()
+    )
+
 
 class AdviceCache:
     def __init__(self, path: str = "advice.db", readonly: bool = False):
@@ -31,6 +42,7 @@ class AdviceCache:
         self.readonly = readonly
         self._conn: sqlite3.Connection | None = None
         self._broken_until = 0.0
+        self._enqueued: set[str] = set()
         self._connect()
 
     def _connect(self) -> None:
@@ -75,7 +87,7 @@ class AdviceCache:
         return self._conn is not None
 
     def lookup(self, text: str) -> int:
-        if not self._usable() or not text:
+        if not isinstance(text, str) or not text or not self._usable():
             return NO_ADVICE
         try:
             row = self._conn.execute(
@@ -87,14 +99,27 @@ class AdviceCache:
         return row[0] if row else NO_ADVICE
 
     def enqueue(self, text: str) -> None:
-        if not self._usable() or self.readonly or not text:
+        if not isinstance(text, str) or not text:
+            return
+        if self.readonly or not self._usable():
             return
         try:
+            key = normalise(text)
+            if key in self._enqueued or len(key) > MAX_TEXT_LEN:
+                return
+            (rows,) = self._conn.execute("SELECT COUNT(*) FROM queue").fetchone()
+            if rows >= MAX_QUEUE_ROWS:
+                return
             self._conn.execute(
-                "INSERT OR IGNORE INTO queue (text) VALUES (?)", (normalise(text),)
+                "INSERT OR IGNORE INTO queue (text) "
+                "SELECT ? WHERE NOT EXISTS (SELECT 1 FROM advice WHERE text = ?)",
+                (key, key),
             )
             self._conn.commit()
-        except Exception:
+            self._enqueued.add(key)
+        except Exception as exc:
+            if _is_contention(exc):
+                return  # dropped; the text will be seen again next step
             self._mark_broken()
 
     def pending(self, limit: int = 32) -> list[str]:
@@ -110,15 +135,17 @@ class AdviceCache:
         return [r[0] for r in rows]
 
     def put(self, text: str, action: int) -> None:
-        if not self._usable() or not text:
+        if not isinstance(text, str) or not text or not self._usable():
             return
-        key = normalise(text)
         try:
+            key = normalise(text)
             self._conn.execute(
                 "INSERT OR REPLACE INTO advice (text, action) VALUES (?, ?)",
                 (key, int(action)),
             )
             self._conn.execute("DELETE FROM queue WHERE text = ?", (key,))
             self._conn.commit()
-        except Exception:
+        except Exception as exc:
+            if _is_contention(exc):
+                return
             self._mark_broken()
