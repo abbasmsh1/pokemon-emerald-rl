@@ -18,6 +18,12 @@ NO_ADVICE = 8  # one past the 8 action indices
 # of a permanent fault is one reconnect attempt per interval.
 RETRY_SECONDS = 60.0
 
+# Connection busy timeout. Exposed as a module constant so the concurrency
+# test can shorten it: at the production value a reader simply waits out a
+# rollback-journal lock, which makes the test pass even without WAL and so
+# proves nothing.
+BUSY_TIMEOUT = 5.0
+
 
 class AdviceCache:
     def __init__(self, path: str = "advice.db", readonly: bool = False):
@@ -29,7 +35,7 @@ class AdviceCache:
 
     def _connect(self) -> None:
         try:
-            conn = sqlite3.connect(self.path, timeout=5.0, check_same_thread=False)
+            conn = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT, check_same_thread=False)
             # WAL lets eight workers read while the advisor writes. The default
             # rollback journal takes an exclusive lock and raises
             # "database is locked" under this access pattern.

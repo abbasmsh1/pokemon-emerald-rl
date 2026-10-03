@@ -43,15 +43,23 @@ def test_enqueue_then_pending_then_put_clears():
 
 
 def _cache_worker(args):
-    """Module level so multiprocessing can pickle it."""
+    """Module level so multiprocessing can pickle it.
+
+    Shortens the busy timeout so a rollback-journal lock raises instead of
+    being waited out. Without this the test passes even with WAL disabled.
+    """
+    import advice_cache
+
+    advice_cache.BUSY_TIMEOUT = 0.05
+
     path, index = args
     if index == 0:
-        c = AdviceCache(path)
-        for i in range(100):
+        c = advice_cache.AdviceCache(path)
+        for i in range(200):
             c.put(f"line {i}", i % 8)
         return True
-    c = AdviceCache(path, readonly=True)
-    return all(c.lookup("shared line") == 5 for _ in range(100))
+    c = advice_cache.AdviceCache(path, readonly=True)
+    return all(c.lookup("shared line") == 5 for _ in range(200))
 
 
 def test_concurrent_processes_with_a_writer():
