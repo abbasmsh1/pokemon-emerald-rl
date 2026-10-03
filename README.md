@@ -56,7 +56,9 @@ flag exists to answer.
 | New 8x8 section entered | +0.5 |
 | Script event flag set | +1 |
 | Trainer defeated | +2 |
+| Experience gained | +0.02 per point (a wild win is 20-40) |
 | Party level gained | +0.2 |
+| Running from a battle | -1 |
 | Pokemon seen / caught | +0.1 / +0.5 |
 | Whiteout | -5 (does not end the episode) |
 | 5,000 steps earning nothing | -1 |
@@ -81,6 +83,7 @@ every episode was ending that way at ~18,300 steps against a 65,536 cap.
 | `env.py` | Gymnasium environment, observations, reward |
 | `train.py` | PPO across 8 subprocess workers |
 | `backbone.py` | Optional pretrained ResNet18 feature extractor |
+| `text.py` | Decodes on-screen text straight from RAM, no OCR |
 | `coverage.py` | Renders the exploration overlay |
 | `stats.py` | Decodes a savestate into readable progress |
 | `baseline.py` | Random-agent exploration gate |

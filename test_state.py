@@ -14,7 +14,7 @@ def test_read_returns_expected_keys_and_types():
     expected = {
         "badges", "map", "pos", "party_levels", "party_hp_frac",
         "money", "seen", "caught", "script_flag_count",
-        "trainer_flag_count", "whiteout",
+        "trainer_flag_count", "whiteout", "party_exp", "screen_text",
     }
     assert set(s) == expected, f"key mismatch: {set(s) ^ expected}"
 
@@ -24,6 +24,8 @@ def test_read_returns_expected_keys_and_types():
     assert isinstance(s["party_levels"], list)
     assert isinstance(s["party_hp_frac"], float) and 0.0 <= s["party_hp_frac"] <= 1.0
     assert isinstance(s["money"], int) and s["money"] >= 0
+    assert isinstance(s["party_exp"], int) and s["party_exp"] >= 0
+    assert isinstance(s["screen_text"], str)
     assert 0 <= s["seen"] <= POKEDEX_CAPACITY
     assert 0 <= s["caught"] <= POKEDEX_CAPACITY
     assert isinstance(s["whiteout"], bool)

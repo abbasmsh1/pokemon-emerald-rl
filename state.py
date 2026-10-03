@@ -7,6 +7,8 @@ per step against a 7.36ms step budget.
 """
 
 from pygba import PyGBA
+
+from text import read_screen_text
 from pygba.game_wrappers.utils.emerald_utils import (
     FLAG_BADGE01_GET,
     SCRIPT_FLAGS_START,
@@ -51,6 +53,8 @@ class GameState:
                 "map": (0, 0),
                 "pos": (0, 0),
                 "party_levels": [],
+                "party_exp": 0,
+                "screen_text": "",
                 "party_hp_frac": 0.0,
                 "money": 0,
                 "seen": 0,
@@ -68,6 +72,10 @@ class GameState:
 
         party = sb1["playerParty"]
         levels = [m["level"] for m in party]
+        # Experience is the fine-grained battle signal. A level-up needs many
+        # wins, so level alone is far too sparse to teach battling, and fleeing
+        # earns exactly zero experience.
+        party_exp = sum(m["box"]["substructs"][0]["experience"] for m in party)
         total_hp = sum(m["hp"] for m in party)
         total_max = sum(m["maxHp"] for m in party)
         hp_frac = (total_hp / total_max) if total_max > 0 else 0.0
@@ -92,6 +100,8 @@ class GameState:
             "map": (loc["mapGroup"], loc["mapNum"]),
             "pos": (pos["x"], pos["y"]),
             "party_levels": levels,
+            "party_exp": party_exp,
+            "screen_text": read_screen_text(self.gba),
             "party_hp_frac": hp_frac,
             "money": money,
             "seen": seen,

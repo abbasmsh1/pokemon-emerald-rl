@@ -106,6 +106,116 @@ def test_section_reward_is_gated_on_stability():
     print("test_section_reward_is_gated_on_stability PASSED")
 
 
+def _clear_exploration(env):
+    """Exploration terms pay once, so a second _compute_reward call sees a
+    different baseline than the first. Measured calls must each start from the
+    same cleared state or the comparison is meaningless, which silently made an
+    earlier version of these tests pass for the wrong reason.
+    """
+    env._visited_tiles.clear()
+    env._visited_maps.clear()
+    env._visited_sections.clear()
+    env._tiles_per_map.clear()
+
+
+def test_experience_gain_is_rewarded():
+    """Winning a battle must pay. This is the reason the agent used to flee."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    _clear_exploration(env)
+    env._max_party_exp = 100
+    env._prev = dict(s, party_exp=100)
+    before = env._compute_reward(dict(s, party_exp=100))
+
+    _clear_exploration(env)
+    env._max_party_exp = 100
+    env._prev = dict(s, party_exp=100)
+    after = env._compute_reward(dict(s, party_exp=130))
+
+    gained = after - before
+    # Absolute floor first. An earlier version asserted only against
+    # EmeraldEnv.EXP_REWARD on both sides, so zeroing the constant made the
+    # whole test vacuous and it passed with the feature disabled.
+    assert gained > 0.1, f"30 exp paid {gained}; experience is not rewarded"
+    assert abs(gained - 30 * EmeraldEnv.EXP_REWARD) < 1e-6, (
+        f"30 exp paid {gained}, expected {30 * EmeraldEnv.EXP_REWARD}"
+    )
+    env.close()
+    print("test_experience_gain_is_rewarded PASSED")
+
+
+def test_experience_uses_a_high_water_mark():
+    """A PC deposit then withdraw must not re-pay banked experience."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._max_party_exp = 0
+    env._prev = dict(s, party_exp=0)
+
+    env._compute_reward(dict(s, party_exp=200))
+    assert env._max_party_exp == 200
+
+    env._prev = dict(s, party_exp=200)
+    dipped = env._compute_reward(dict(s, party_exp=0))
+    env._prev = dict(s, party_exp=0)
+    restored = env._compute_reward(dict(s, party_exp=200))
+
+    assert env._max_party_exp == 200, "high-water mark regressed"
+    assert restored <= dipped + 1e-6, "withdrawing re-paid the same experience"
+    env.close()
+    print("test_experience_uses_a_high_water_mark PASSED")
+
+
+def test_running_away_is_penalised_once():
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    _clear_exploration(env)
+    env._was_fleeing = False
+    env._prev = dict(s)
+    quiet = env._compute_reward(dict(s, screen_text=""))
+
+    _clear_exploration(env)
+    env._was_fleeing = False
+    env._prev = dict(s)
+    fled = env._compute_reward(dict(s, screen_text="Got away safely!"))
+
+    _clear_exploration(env)
+    env._prev = dict(s)
+    still = env._compute_reward(dict(s, screen_text="Got away safely!"))
+
+    assert fled < quiet, f"fleeing was free: {fled} vs {quiet}"
+    assert fled - quiet <= EmeraldEnv.FLEE_PENALTY + 1e-6, (
+        f"flee cost {fled - quiet}, expected {EmeraldEnv.FLEE_PENALTY}"
+    )
+    assert still > fled, "flee penalty charged again while the text lingered"
+    env.close()
+    print("test_running_away_is_penalised_once PASSED")
+
+
+def test_opponent_fleeing_is_not_penalised():
+    """A wild Pokemon running is not the agent's doing."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    _clear_exploration(env)
+    env._was_fleeing = False
+    env._prev = dict(s)
+    quiet = env._compute_reward(dict(s, screen_text=""))
+
+    _clear_exploration(env)
+    env._was_fleeing = False
+    env._prev = dict(s)
+    opponent = env._compute_reward(dict(s, screen_text="ZIGZAGOON fled!"))
+
+    assert abs(opponent - quiet) < 1e-6, (
+        f"opponent fleeing changed reward by {opponent - quiet}"
+    )
+    env.close()
+    print("test_opponent_fleeing_is_not_penalised PASSED")
+
+
 def test_whiteout_does_not_end_the_episode():
     """A whiteout warps the player to a Pokemon Center healed; it is not death.
 
@@ -462,6 +572,10 @@ if __name__ == "__main__":
     test_section_boundary_is_section_size_tiles()
     test_sections_clear_on_reset()
     test_section_reward_is_gated_on_stability()
+    test_experience_gain_is_rewarded()
+    test_experience_uses_a_high_water_mark()
+    test_running_away_is_penalised_once()
+    test_opponent_fleeing_is_not_penalised()
     test_whiteout_does_not_end_the_episode()
     test_whiteout_still_costs_the_penalty()
     test_badge_still_ends_the_episode()

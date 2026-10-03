@@ -13,6 +13,7 @@ from pygba import PyGBA
 from pygba.utils import KEY_MAP
 
 from state import POKEDEX_CAPACITY, GameState
+from text import player_fled, read_screen_text
 
 SCREEN_SHAPE = (3, 80, 120)
 STATE_SIZE = 17
@@ -71,6 +72,15 @@ class EmeraldEnv(gym.Env):
     SCRIPT_FLAG_REWARD = 1.0
     TRAINER_REWARD = 2.0
     LEVEL_REWARD = 0.2
+    # Experience is the battle signal. A wild win is worth 20-40 points, so at
+    # 0.02 each a win pays about as much as finding a new section, while
+    # fleeing pays nothing at all. Fleeing was close to optimal before this:
+    # exploration paid continuously outside battle and a battle paid only on a
+    # rare level-up, so running away got back to the paying activity fastest.
+    EXP_REWARD = 0.02
+    # Charged when the player chooses to run. A wild Pokemon fleeing on its own
+    # is not the agent's doing and is deliberately not penalised.
+    FLEE_PENALTY = -1.0
     SEEN_REWARD = 0.1
     CAUGHT_REWARD = 0.5
     WHITEOUT_PENALTY = -5.0
@@ -114,6 +124,8 @@ class EmeraldEnv(gym.Env):
         self._prev: dict | None = None
         self._flag_baseline: dict[str, int] | None = None
         self._max_level_sum = 0
+        self._max_party_exp = 0
+        self._was_fleeing = False
         self._steps_since_reward = 0
         # Reporting only, never used in reward. Deliberately uncapped and NOT
         # cleared on reset: _visited_tiles is capped at TILE_CAP_PER_MAP to stop
@@ -229,6 +241,19 @@ class EmeraldEnv(gym.Env):
                 reward += self.LEVEL_REWARD * (level_sum - self._max_level_sum)
                 self._max_level_sum = level_sum
 
+            # Same high-water mark as levels: a PC deposit then withdraw must
+            # not re-pay experience the agent already banked.
+            if s["party_exp"] > self._max_party_exp:
+                reward += self.EXP_REWARD * (s["party_exp"] - self._max_party_exp)
+                self._max_party_exp = s["party_exp"]
+
+            # Edge-triggered: the message lingers for many frames, so charge the
+            # decision to run once rather than every step it stays on screen.
+            fleeing = player_fled(s["screen_text"])
+            if fleeing and not self._was_fleeing:
+                reward += self.FLEE_PENALTY
+            self._was_fleeing = fleeing
+
             reward += self.SEEN_REWARD * max(0, s["seen"] - prev["seen"])
             reward += self.CAUGHT_REWARD * max(0, s["caught"] - prev["caught"])
             if s["whiteout"] and not prev["whiteout"]:
@@ -302,6 +327,8 @@ class EmeraldEnv(gym.Env):
             "trainer": s["trainer_flag_count"],
         }
         self._max_level_sum = sum(s["party_levels"])
+        self._max_party_exp = s["party_exp"]
+        self._was_fleeing = False
         self._steps_since_reward = 0
         return self._observation(s), self._info(s)
 
