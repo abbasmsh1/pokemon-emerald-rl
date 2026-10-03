@@ -25,3 +25,4 @@ archive_rn512/
 watchdog.sh
 watchdog.log
 archive_42M/
+advice.db*
