@@ -96,7 +96,7 @@ class EmeraldEnv(gym.Env):
         rom_path: str = "Pokemon - Emerald Version (USA, Europe).gba",
         state_path: str = "boot.state",
         frameskip: int = 24,
-        max_steps: int = 16384,
+        max_steps: int = 16384,   # 0 or less means no step limit
         render_mode: str | None = None,
     ):
         super().__init__()
@@ -367,7 +367,11 @@ class EmeraldEnv(gym.Env):
             self._coverage.add((s["map"][0], s["map"][1], s["pos"][0], s["pos"][1]))
         reward = self._compute_reward(s)
         terminated = self._should_terminate(s, stable)
-        truncated = self._step_count >= self.max_steps
+        # max_steps <= 0 removes the limit entirely. Combined with whiteouts no
+        # longer terminating, only a badge then ends an episode, so reset() may
+        # never run: the per-episode exploration sets never clear and tile,
+        # section and map novelty are permanently exhausted once walked.
+        truncated = self.max_steps > 0 and self._step_count >= self.max_steps
         return obs, reward, terminated, truncated, self._info(s)
 
     def render(self):

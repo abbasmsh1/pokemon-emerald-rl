@@ -216,6 +216,33 @@ def test_opponent_fleeing_is_not_penalised():
     print("test_opponent_fleeing_is_not_penalised PASSED")
 
 
+def test_zero_max_steps_removes_the_limit():
+    """max_steps=0 must never truncate, however many steps elapse."""
+    env = EmeraldEnv(max_steps=0)
+    env.reset()
+    for _ in range(40):
+        _, _, terminated, truncated, _ = env.step(0)
+        assert not truncated, "truncated despite max_steps=0"
+        assert not terminated, "terminated without a badge"
+    env._step_count = 10_000_000
+    _, _, _, truncated, _ = env.step(0)
+    assert not truncated, "truncated at a huge step count despite max_steps=0"
+    env.close()
+    print("test_zero_max_steps_removes_the_limit PASSED")
+
+
+def test_positive_max_steps_still_truncates():
+    env = EmeraldEnv(max_steps=5)
+    env.reset()
+    truncations = 0
+    for _ in range(6):
+        _, _, _, truncated, _ = env.step(0)
+        truncations += int(truncated)
+    assert truncations >= 1, "a positive max_steps no longer truncates"
+    env.close()
+    print("test_positive_max_steps_still_truncates PASSED")
+
+
 def test_whiteout_does_not_end_the_episode():
     """A whiteout warps the player to a Pokemon Center healed; it is not death.
 
@@ -576,6 +603,8 @@ if __name__ == "__main__":
     test_experience_uses_a_high_water_mark()
     test_running_away_is_penalised_once()
     test_opponent_fleeing_is_not_penalised()
+    test_zero_max_steps_removes_the_limit()
+    test_positive_max_steps_still_truncates()
     test_whiteout_does_not_end_the_episode()
     test_whiteout_still_costs_the_penalty()
     test_badge_still_ends_the_episode()

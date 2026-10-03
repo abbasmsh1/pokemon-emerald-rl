@@ -144,7 +144,9 @@ def main():
                         help="steps per episode before truncation. The design doc "
                              "names this the first lever when training plateaus: "
                              "the badge is ~50k steps out, so a 16k episode cannot "
-                             "reach it in one life")
+                             "reach it in one life. 0 removes the limit, which "
+                             "also stops reset() ever running, so exploration "
+                             "novelty is never replenished")
     parser.add_argument("--batch-size", type=int, default=128,
                         help="PPO minibatch size. Smaller means more optimizer "
                              "steps per rollout: better sample efficiency, lower "

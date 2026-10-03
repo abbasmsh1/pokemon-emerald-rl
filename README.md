@@ -70,7 +70,10 @@ direction rather than shuffling, and unlike tile novelty it is not exhausted by
 the per-map cap.
 
 **Episodes** start from a savestate captured after the intro and end on a badge
-or at the step cap. A whiteout is deliberately not fatal: in this game it warps
+or at the step cap. `--max-steps 0` removes the cap entirely, in which case
+only a badge ends an episode: `reset()` then never runs, so the per-episode
+exploration sets never clear and tile, section and map novelty are permanently
+exhausted once an area is walked. A whiteout is deliberately not fatal: in this game it warps
 the player to a Pokemon Center with a healed party and play continues. Ending
 the episode on it discarded all accumulated exploration, and measurement showed
 every episode was ending that way at ~18,300 steps against a 65,536 cap.
