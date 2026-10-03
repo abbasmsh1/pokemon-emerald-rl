@@ -1,6 +1,5 @@
 """Assertion-based checks for the advice cache. No framework."""
 
-import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -43,25 +42,55 @@ def test_enqueue_then_pending_then_put_clears():
         print("test_enqueue_then_pending_then_put_clears PASSED")
 
 
-def test_concurrent_readers_do_not_lock():
-    """Review Focus 3. Eight workers share one file; the default journal mode
-    raises 'database is locked' under this load."""
+def _cache_worker(args):
+    """Module level so multiprocessing can pickle it."""
+    path, index = args
+    if index == 0:
+        c = AdviceCache(path)
+        for i in range(100):
+            c.put(f"line {i}", i % 8)
+        return True
+    c = AdviceCache(path, readonly=True)
+    return all(c.lookup("shared line") == 5 for _ in range(100))
+
+
+def test_concurrent_processes_with_a_writer():
+    """The real case: 8 worker processes reading while the advisor writes.
+
+    The default rollback journal raises 'database is locked' here; WAL is
+    what makes it survive. Threads in one process do not exercise this.
+    """
+    import multiprocessing as mp
+
     with tempfile.TemporaryDirectory() as d:
         path = str(Path(d) / "a.db")
-        writer = AdviceCache(path)
-        writer.put("shared line", 5)
+        AdviceCache(path).put("shared line", 5)
 
-        def hammer(_):
-            c = AdviceCache(path, readonly=True)
-            return [c.lookup("shared line") for _ in range(50)]
+        ctx = mp.get_context("fork")
+        with ctx.Pool(9) as pool:
+            results = pool.map(_cache_worker, [(path, i) for i in range(9)])
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            results = list(pool.map(hammer, range(8)))
+        assert all(results), "a process saw a wrong value or hit a lock"
+    print("test_concurrent_processes_with_a_writer PASSED")
 
-        assert all(v == 5 for batch in results for v in batch), (
-            "concurrent readers saw wrong or missing values"
-        )
-        print("test_concurrent_readers_do_not_lock PASSED")
+
+def test_broken_cache_recovers_after_backoff():
+    """A transient failure must not disable advice for the rest of the run."""
+    import time as _time
+
+    with tempfile.TemporaryDirectory() as d:
+        path = str(Path(d) / "a.db")
+        c = AdviceCache(path)
+        c.put("recoverable line", 4)
+        assert c.lookup("recoverable line") == 4
+
+        c._mark_broken()
+        assert c.lookup("recoverable line") == NO_ADVICE, "backoff not in effect"
+
+        # Expire the backoff rather than sleeping for it
+        c._broken_until = _time.monotonic() - 1
+        assert c.lookup("recoverable line") == 4, "cache never reconnected"
+    print("test_broken_cache_recovers_after_backoff PASSED")
 
 
 def test_corrupt_db_degrades_to_no_advice():
@@ -89,7 +118,8 @@ if __name__ == "__main__":
     test_put_then_lookup_returns_action()
     test_lookup_is_normalised()
     test_enqueue_then_pending_then_put_clears()
-    test_concurrent_readers_do_not_lock()
+    test_concurrent_processes_with_a_writer()
+    test_broken_cache_recovers_after_backoff()
     test_corrupt_db_degrades_to_no_advice()
     test_unwritable_path_degrades_to_no_advice()
     print("\nall advice cache tests passed")
