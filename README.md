@@ -58,10 +58,10 @@ flag exists to answer.
 | Trainer defeated | +2 |
 | Experience gained | +0.02 per point (a wild win is 20-40) |
 | Party level gained | +0.2 |
-| Running from a battle | -1 |
+| Running from a battle | -5 |
 | Pokemon seen / caught | +0.1 / +0.5 |
 | Whiteout | -5 (does not end the episode) |
-| 5,000 steps earning nothing | -1 |
+| 2,500 steps earning nothing | -3 |
 
 The per-map tile cap stops the agent farming reward by pacing across a large
 route. Sections are 8x8 tile blocks, sitting between the tile and map terms:

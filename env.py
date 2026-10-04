@@ -80,7 +80,10 @@ class EmeraldEnv(gym.Env):
     EXP_REWARD = 0.02
     # Charged when the player chooses to run. A wild Pokemon fleeing on its own
     # is not the agent's doing and is deliberately not penalised.
-    FLEE_PENALTY = -1.0
+    # Harsher than the -1 it started at. At -1 a single wild win (~+0.5) nearly
+    # covered the cost of running, so fleeing stayed close to break-even. At -5
+    # running costs ten wins, which is meant to be unambiguous.
+    FLEE_PENALTY = -5.0
     SEEN_REWARD = 0.1
     CAUGHT_REWARD = 0.5
     WHITEOUT_PENALTY = -5.0
@@ -88,8 +91,10 @@ class EmeraldEnv(gym.Env):
     # Charged every STALL_LIMIT steps that earn nothing at all. At 16,384 steps an
     # episode can absorb at most three of these, so it nudges away from idling
     # without overwhelming a +100 badge or the dense novelty signal.
-    STALL_LIMIT = 5000
-    STALL_PENALTY = -1.0
+    # Charged sooner and harder: 5,000 steps of nothing was ~33 minutes of game
+    # time for -1, which barely registered against exploration income.
+    STALL_LIMIT = 2500
+    STALL_PENALTY = -3.0
 
     def __init__(
         self,

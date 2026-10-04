@@ -194,6 +194,21 @@ def test_running_away_is_penalised_once():
     print("test_running_away_is_penalised_once PASSED")
 
 
+def test_fleeing_costs_more_than_a_battle_wins():
+    """The whole point of the flee penalty.
+
+    A wild win is worth roughly 20-40 experience. If running costs less than a
+    win pays, running stays near break-even and the agent keeps doing it, which
+    is exactly the behaviour this penalty exists to stop.
+    """
+    best_case_win = 40 * EmeraldEnv.EXP_REWARD
+    assert abs(EmeraldEnv.FLEE_PENALTY) > best_case_win, (
+        f"fleeing costs {abs(EmeraldEnv.FLEE_PENALTY)} but a good win pays "
+        f"{best_case_win}; running is still near break-even"
+    )
+    print("test_fleeing_costs_more_than_a_battle_wins PASSED")
+
+
 def test_opponent_fleeing_is_not_penalised():
     """A wild Pokemon running is not the agent's doing."""
     env = EmeraldEnv()
@@ -602,6 +617,7 @@ if __name__ == "__main__":
     test_experience_gain_is_rewarded()
     test_experience_uses_a_high_water_mark()
     test_running_away_is_penalised_once()
+    test_fleeing_costs_more_than_a_battle_wins()
     test_opponent_fleeing_is_not_penalised()
     test_zero_max_steps_removes_the_limit()
     test_positive_max_steps_still_truncates()
