@@ -1,0 +1,35 @@
+{
+  "episodes": 20,
+  "steps_per_episode": 4096,
+  "maps_reached": [
+    [
+      1,
+      0
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      1,
+      3
+    ],
+    [
+      1,
+      4
+    ],
+    [
+      6,
+      0
+    ],
+    [
+      7,
+      0
+    ]
+  ],
+  "mean_tiles": 322.7,
+  "max_tiles": 387,
+  "left_start_map_fraction": 1.0,
+  "script_flag_decreases": 11,
+  "trainer_flag_decreases": 11
+}
