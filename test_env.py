@@ -117,6 +117,9 @@ def _clear_exploration(env):
     env._visited_maps.clear()
     env._visited_sections.clear()
     env._tiles_per_map.clear()
+    # The first-ever section bonus is cumulative for the process and must be
+    # cleared too, or the first of two "identical" measured calls pays +1 more.
+    env._sections_ever.clear()
 
 
 def test_experience_gain_is_rewarded():
@@ -473,6 +476,7 @@ def test_implausible_flag_delta_scores_zero():
         EmeraldEnv.NEW_MAP_REWARD
         + EmeraldEnv.NEW_TILE_REWARD
         + EmeraldEnv.NEW_SECTION_REWARD
+        + EmeraldEnv.FIRST_SECTION_REWARD
     )
     assert r < EmeraldEnv.BADGE_REWARD, f"transient paid {r}, more than a badge"
     assert r <= exploration_ceiling + 1e-6, (
@@ -1046,7 +1050,9 @@ def test_novelty_refresh_restores_income():
     env._refresh_novelty()
     again = env._compute_reward(s)
     assert again > 0, f"after a refresh the tile paid {again}, expected income"
-    assert abs(again - first) < 1e-6, (
+    # Everything re-pays except the first-ever section bonus, which is
+    # cumulative for the process and is the one thing a refresh must not revive.
+    assert abs(again - (first - EmeraldEnv.FIRST_SECTION_REWARD)) < 1e-6, (
         f"refresh paid {again} against {first} for the same tile"
     )
     env.close()
@@ -1511,6 +1517,53 @@ def test_bump_exempts_battles_menus_and_moves():
     print("test_bump_exempts_battles_menus_and_moves PASSED")
 
 
+def test_wild_encounter_pays_once_per_message():
+    """The grass reward: encounters only happen where wild Pokemon are."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    base = dict(s, screen_text="")
+    env._prev = dict(base)
+    env._compute_reward(base)
+    env.drain_reward_terms()
+    hit = dict(base, screen_text="Wild ZIGZAGOON appeared!")
+    env._compute_reward(hit)
+    env._compute_reward(hit)                                        # same line: no
+    env._compute_reward(dict(base, screen_text="Go! TORCHIC!"))     # not an encounter
+    paid = env.drain_reward_terms().get("encounter", 0.0)
+    assert abs(paid - EmeraldEnv.ENCOUNTER_REWARD) < 1e-6 and paid > 0.5, f"encounter paid {paid}"
+    assert EmeraldEnv.FLEE_PENALTY + EmeraldEnv.ENCOUNTER_REWARD < -1.0, "encounter-and-flee must stay clearly negative"
+    env.close()
+    print("test_wild_encounter_pays_once_per_message PASSED")
+
+
+def test_first_ever_section_pays_extra_and_survives_refresh():
+    """After a novelty refresh a known section re-pays NEW_SECTION_REWARD only;
+    the first-ever bonus is paid once for the life of the process."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = dict(s)
+    env._compute_reward(s)
+    env._refresh_novelty()
+    env._sections_ever.clear()
+    env.drain_reward_terms()
+
+    far = dict(s, pos=(s["pos"][0] + 5 * EmeraldEnv.SECTION_SIZE, s["pos"][1]))
+    env._compute_reward(far)
+    first = env.drain_reward_terms()
+    assert abs(first.get("first_section", 0.0) - EmeraldEnv.FIRST_SECTION_REWARD) < 1e-6, f"first visit paid {first}"
+    assert first.get("first_section", 0.0) > 0.5
+
+    env._refresh_novelty()                     # the per-episode set forgets it
+    env._compute_reward(far)
+    again = env.drain_reward_terms()
+    assert "first_section" not in again, f"the first-ever bonus was re-paid after a refresh: {again}"
+    assert abs(again.get("new_section", 0.0) - EmeraldEnv.NEW_SECTION_REWARD) < 1e-6, "the per-episode section bonus should still re-pay"
+    env.close()
+    print("test_first_ever_section_pays_extra_and_survives_refresh PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1580,4 +1633,6 @@ if __name__ == "__main__":
     test_our_attack_pays_once_per_message()
     test_pressing_into_a_wall_is_charged()
     test_bump_exempts_battles_menus_and_moves()
+    test_wild_encounter_pays_once_per_message()
+    test_first_ever_section_pays_extra_and_survives_refresh()
     print("\nall env tests passed")

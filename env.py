@@ -22,7 +22,7 @@ from state import (
     GameState,
     force_fast_text,
 )
-from text import our_attack, player_fled
+from text import our_attack, player_fled, wild_encounter
 
 SCREEN_SHAPE = (3, 80, 120)
 # 17 game values, then 12 that describe the agent's own situation: the last
@@ -168,6 +168,12 @@ class EmeraldEnv(gym.Env):
     # and unlike tile novelty it is not exhausted by the per-map cap.
     SECTION_SIZE = 8
     NEW_SECTION_REWARD = 0.5
+    # On top of NEW_SECTION_REWARD, once per section for the life of the
+    # process. The per-episode set is refreshed every 50,000 steps so that
+    # novelty never runs dry, but that re-pays a section walked a hundred times
+    # exactly like one never seen. This is the difference between the two.
+    # Cumulative and never cleared, so it cannot be farmed.
+    FIRST_SECTION_REWARD = 1.0
     SCRIPT_FLAG_REWARD = 1.0
     TRAINER_REWARD = 2.0
     # Raised from 0.2. A level is many battles' worth of experience and the
@@ -192,6 +198,12 @@ class EmeraldEnv(gym.Env):
     # not only when the experience lands at the end of a battle it may lose.
     # Small against EXP: a wild win is 0.4-0.8 of experience, an attack 0.2.
     ATTACK_REWARD = 0.2
+    # A wild battle starting, paid once per "Wild X appeared!" message. This is
+    # the grass reward: encounters happen only where wild Pokemon are, so it
+    # pays roaming tall grass without resolving the tile under the player, and
+    # it pays for seeking the fights that leveling needs. Running from the
+    # encounter costs 5x this, so encounter-and-flee stays clearly negative.
+    ENCOUNTER_REWARD = 1.0
     # Pokedex progress, raised from 0.1/0.5. Both are popcounts of the dex's
     # seen/owned bit arrays, which only ever gain bits, so neither can be
     # farmed and both can be paid properly. Catching is the rarer and more
@@ -385,6 +397,8 @@ class EmeraldEnv(gym.Env):
         # reward farming and resets each episode, so it would draw a truncated,
         # single-episode picture. This accumulates the real footprint.
         self._coverage: set[tuple[int, int, int, int]] = set()
+        # Sections visited at least once in this process; see FIRST_SECTION_REWARD.
+        self._sections_ever: set[tuple[int, int, int, int]] = set()
 
         self.action_space = gym.spaces.Discrete(len(self.ACTIONS))
         self.observation_space = gym.spaces.Dict({
@@ -549,6 +563,9 @@ class EmeraldEnv(gym.Env):
         if section_key not in self._visited_sections:
             self._visited_sections.add(section_key)
             reward += self._pay("new_section", self.NEW_SECTION_REWARD)
+            if section_key not in self._sections_ever:
+                self._sections_ever.add(section_key)
+                reward += self._pay("first_section", self.FIRST_SECTION_REWARD)
 
         if prev is not None:
             reward += self._pay("badge", self.BADGE_REWARD * max(0, s["badges"] - prev["badges"]))
@@ -620,6 +637,8 @@ class EmeraldEnv(gym.Env):
             attacking = our_attack(s["screen_text"])
             if attacking and s["screen_text"] != prev["screen_text"]:
                 reward += self._pay("attack", self.ATTACK_REWARD)
+            if wild_encounter(s["screen_text"]) and s["screen_text"] != prev["screen_text"]:
+                reward += self._pay("encounter", self.ENCOUNTER_REWARD)
 
             # Counted only while walking; see LOITER_PENALTY.
             if s["pos"] != prev["pos"]:

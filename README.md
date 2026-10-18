@@ -95,7 +95,7 @@ flag exists to answer.
 | Gym badge | +100 |
 | New map entered | +2 |
 | New tile visited | +0.05, capped at 400/map |
-| New 8x8 section entered | +0.5 |
+| New 8x8 section entered | +0.5, plus +1 the first time ever in the process |
 | Script event flag set | +1 |
 | Trainer defeated | +2 |
 | Experience gained | +0.02 per point (a wild win is 20-40) |
@@ -103,6 +103,7 @@ flag exists to answer.
 | Party HP fraction | +/-3 per full bar, both directions |
 | Running from a battle | -5 |
 | Our Pokemon uses a move | +0.2 per message |
+| A wild battle starts | +1 per encounter |
 | Changing an OPTION setting | -10 |
 | Pressing Start | -0.5 |
 | Pressing a direction without moving (overworld, no text on screen) | -0.05 |
