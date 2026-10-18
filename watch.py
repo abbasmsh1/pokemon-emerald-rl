@@ -52,15 +52,24 @@ def main():
                              "tile window against the screen when no compatible checkpoint exists")
     parser.add_argument("--snapshot", type=str, default=None,
                         help="save the composed window to this PNG after --steps and exit")
+    parser.add_argument("--teacher", action="store_true",
+                        help="drive with the SLM teacher (teacher.py) instead of a checkpoint; the HUD "
+                             "shows its eight button scores and the tile summary it was given")
+    parser.add_argument("--temperature", type=float, default=0.0, help="teacher sampling temperature")
     args = parser.parse_args()
-    if args.checkpoint is None and not args.random:
-        parser.error("a checkpoint is required unless --random is given")
+    if args.checkpoint is None and not (args.random or args.teacher):
+        parser.error("a checkpoint is required unless --random or --teacher is given")
 
-    env = EmeraldEnv(render_mode="rgb_array")
-    model = None if args.random else PPO.load(args.checkpoint, device="cpu")
+    env = EmeraldEnv(render_mode="rgb_array")      # the mGBA core exists before the teacher's torch import
+    teacher = None
+    if args.teacher:
+        from teacher import ACTION_WORDS, build_prompt, choose_action, frontier_direction, load_model, summarise_tiles
+        teacher = load_model()
+    model = None if (args.random or args.teacher) else PPO.load(args.checkpoint, device="cpu")
     fe = None if model is None else model.policy.features_extractor
     has_idm = hasattr(fe, "idm_logits")
     rng = np.random.default_rng(0)
+    recent, moved_flag, scores_line, summary_line = [], False, "", ""
 
     pygame.init()
     w, h = env.width * SCALE, env.height * SCALE
@@ -87,12 +96,24 @@ def main():
                 return
 
         prev_screen = obs["screen"]
-        if model is None:
+        if teacher is not None:
+            st = env.state_reader.read()
+            g, n = st["map"]
+            visited = {(sx, sy) for (gg, nn, sx, sy) in env._sections_ever if (gg, nn) == (g, n)}
+            frontier = frontier_direction((st["pos"][0] // 8, st["pos"][1] // 8), visited)
+            prompt = build_prompt(st, obs, recent, moved_flag, frontier)
+            action, sc = choose_action(teacher[0], teacher[1], prompt, args.temperature, rng)
+            scores_line = "scores: " + "  ".join(
+                f"[{w} {v:.1f}]" if k == action else f"{w} {v:.1f}" for k, (w, v) in enumerate(zip(ACTION_WORDS, sc)))
+            summary_line = "teacher sees: " + summarise_tiles(obs["tiles"])[:70] + (f" | unexplored {frontier}" if frontier else "")
+            recent = (recent + [ACTION_WORDS[action]])[-3:]
+        elif model is None:
             action = int(rng.integers(env.action_space.n))
         else:
             action, _ = model.predict(obs, deterministic=False)
             action = int(action)
         obs, reward, terminated, truncated, info = env.step(action)
+        moved_flag = env._moved
         total += reward
         for k, v in env.drain_reward_terms().items():
             if v:
@@ -145,8 +166,10 @@ def main():
             f"battles {counts['battles']}  fled {counts['fled']} (penalty x{counts['flee_booked']})"
             f"  wins {counts['wins']}  whiteouts {counts['whiteouts']}" + battle_line,
             f"pressed: {env.ACTIONS[action] or 'none'}   {idm_line}   step {i}  reward {total:.1f}",
-            "terms: " + "  ".join(f"{k} {v:+.1f}" for k, v in top),
+            scores_line if teacher is not None else "terms: " + "  ".join(f"{k} {v:+.1f}" for k, v in top),
         ]
+        if teacher is not None:
+            lines[0] = (summary_line + "   " + lines[0])[:150]
         for n, line in enumerate(lines):
             screen.blit(font.render(line, True, (230, 230, 230)), (6, h + 2 + n * LINE_H))
         pygame.display.flip()
