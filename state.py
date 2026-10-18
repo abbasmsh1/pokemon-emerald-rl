@@ -114,6 +114,14 @@ class GameState:
         pos = sb1["pos"]
 
         party = sb1["playerParty"]
+        # A slot can parse with box or substructs None while the game is
+        # writing it (seen live: a worker died on it after 3.2M steps, and with
+        # the fork start method the trainer then hung rather than crashed).
+        # Treat it as the same kind of transient as a negative map id.
+        if any(m.get("box") is None or m["box"].get("substructs") is None for m in party):
+            if self._last_good is not None:
+                return self._last_good
+            party = []
         levels = [m["level"] for m in party]
         # Experience is the fine-grained battle signal. A level-up needs many
         # wins, so level alone is far too sparse to teach battling, and fleeing

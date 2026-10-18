@@ -76,7 +76,33 @@ def test_read_does_not_touch_rom():
     print(f"test_read_does_not_touch_rom PASSED (overhead {overhead*1e3:.3f}ms)")
 
 
+def test_half_written_party_slot_is_a_transient():
+    """A slot whose box or substructs parse as None must not raise and must
+    not poison the reading. A worker died on exactly this after 3.2M steps."""
+    import state as st
+    gba = PyGBA.load(ROM)
+    gba.wait(3000)
+    gs = GameState(gba)
+    good = gs.read()
+    real = st.read_save_block_1
+
+    def broken(gba_):
+        sb1 = real(gba_)
+        if sb1 is not None:
+            sb1 = dict(sb1, playerParty=[{"level": 7, "hp": 1, "maxHp": 1, "box": None}])
+        return sb1
+
+    st.read_save_block_1 = broken
+    try:
+        s = gs.read()
+    finally:
+        st.read_save_block_1 = real
+    assert s["party_levels"] == good["party_levels"], "a half-written party slot changed the reading"
+    print("test_half_written_party_slot_is_a_transient PASSED")
+
+
 if __name__ == "__main__":
+    test_half_written_party_slot_is_a_transient()
     test_read_before_boot_returns_safe_defaults()
     test_read_returns_expected_keys_and_types()
     test_read_does_not_touch_rom()
