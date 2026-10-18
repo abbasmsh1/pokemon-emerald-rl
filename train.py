@@ -21,7 +21,7 @@ _WARMUP.core.run_frame()
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.logger import Image as TBImage
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecEnvWrapper, VecMonitor
 
 from coverage import render_coverage, render_to_array
 from env import EmeraldEnv
@@ -83,6 +83,179 @@ class ProgressCallback(BaseCallback):
         return True
 
 
+class RewardBreakdownCallback(BaseCallback):
+    """Logs reward per 1,000 steps and which term paid it.
+
+    SB3's ep_rew_mean is useless on this run. With --max-steps 0 an episode
+    only ends on a badge, so it never updates, and what it does print is an
+    ep_info_buffer restored from the checkpoint: 1.34e6 reward over 6.55e4-step
+    episodes, from a run whose step cap was removed long ago. Every reward
+    change since then has been flying blind.
+
+    This is episode-independent: it drains the workers' ledgers once per
+    rollout and reports a rate, so a term that starts farming itself shows up
+    as a curve climbing away from the others.
+    """
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        totals: dict[str, float] = {}
+        for worker in self.training_env.env_method("drain_reward_terms"):
+            for term, value in worker.items():
+                totals[term] = totals.get(term, 0.0) + value
+
+        drain = getattr(self.training_env, "drain_curiosity", None)
+        if drain is not None:
+            totals["curiosity"] = drain()
+        steps = self.model.n_steps * self.training_env.num_envs
+        for term, value in totals.items():
+            self.logger.record(f"reward/{term}", value / steps * 1000)
+        self.logger.record("reward/total", sum(totals.values()) / steps * 1000)
+
+
+class CuriosityWrapper(VecEnvWrapper):
+    """Pays the agent for reaching screens the forward model cannot predict.
+
+    This is the "vision guides where to go" part. The forward model in
+    extractor.py predicts the next screen's features from the current ones and
+    the action; where it is wrong, the screen is doing something the agent has
+    not seen enough of, and that is where exploration should go. Where it is
+    right, the place is known and the bonus fades on its own. It is a per-step
+    signal from pixels, so it works in places the RAM novelty terms cannot see:
+    a battle that is going differently, a new menu, an animation.
+
+    The error is divided by its running mean so BETA is the bonus per step on
+    an average screen regardless of feature scale, and capped so one strange
+    frame cannot outbid a badge. Zero on the step after an episode boundary,
+    where the pair is not consecutive.
+
+    Known limit (the "noisy TV"): screens that are unpredictable but useless,
+    like battle animations, also pay. The cap and the decay bound the damage;
+    if reward/curiosity ever dominates while new_tile is flat, lower BETA.
+    """
+
+    BETA = 0.005
+    CAP = 5.0          # in units of BETA
+
+    def __init__(self, venv):
+        super().__init__(venv)
+        self._fe = None
+        self._device = None
+        self._prev_screen = None
+        self._actions = None
+        self._running = None     # running mean error; seeded from the first batch
+        self._booked = 0.0
+
+    def attach(self, extractor, device) -> None:
+        """Called once the model exists; the extractor is the policy's own."""
+        self._fe, self._device = extractor, device
+
+    def reset(self):
+        obs = self.venv.reset()
+        self._prev_screen = obs["screen"].copy()
+        return obs
+
+    def step_async(self, actions) -> None:
+        self._actions = actions
+        self.venv.step_async(actions)
+
+    def step_wait(self):
+        import numpy as np
+        import torch
+
+        obs, rewards, dones, infos = self.venv.step_wait()
+        if self._fe is not None and self._prev_screen is not None:
+            with torch.no_grad():
+                s0 = torch.as_tensor(self._prev_screen, dtype=torch.float32, device=self._device) / 255.0
+                s1 = torch.as_tensor(obs["screen"], dtype=torch.float32, device=self._device) / 255.0
+                a = torch.as_tensor(np.asarray(self._actions).reshape(-1), device=self._device)
+                err = self._fe.forward_error(s0, s1, a).cpu().numpy()
+            if self._running is None:
+                self._running = float(err.mean())
+            bonus = self.BETA * np.minimum(err / (self._running + 1e-8), self.CAP)
+            bonus[dones.astype(bool)] = 0.0
+            self._running = 0.99 * self._running + 0.01 * float(err.mean())
+            rewards = rewards + bonus.astype(rewards.dtype)
+            self._booked += float(bonus.sum())
+        self._prev_screen = obs["screen"].copy()
+        return obs, rewards, dones, infos
+
+    def drain_curiosity(self) -> float:
+        total, self._booked = self._booked, 0.0
+        return total
+
+
+class InverseDynamicsCallback(BaseCallback):
+    """Trains the shared CNN to predict the button pressed between consecutive
+    screens, from pairs in the rollout buffer, after each PPO update.
+
+    The policy's own gradient only reaches the CNN through reward, and 54
+    million steps of that produced features that could not tell a step into
+    a wall from a step that moved. The inverse-dynamics loss supervises exactly
+    that distinction, with labels we already have for free: the action we took.
+    Gradients flow into extractor.cnn, which PPO shares for pi and vf, so the
+    policy sees the improved features on its next update.
+
+    aux/idm_acc is the number to watch: chance is 1/8. It should climb well
+    above that within the first few million steps, and if it does not, the
+    features are not learning what the screen shows.
+    """
+
+    def __init__(self, pairs: int = 2048, steps: int = 4, lr: float = 2.5e-4, weight: float = 1.0):
+        super().__init__()
+        self.pairs, self.steps, self.lr, self.weight = pairs, steps, lr, weight
+        self._opt = None
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        import numpy as np
+        import torch
+        import torch.nn.functional as F
+
+        fe = self.model.policy.features_extractor
+        if not hasattr(fe, "idm_logits"):
+            return
+        if self._opt is None:
+            params = list(fe.cnn.parameters()) + list(fe.idm.parameters()) + list(fe.fwd.parameters())
+            self._opt = torch.optim.Adam(params, lr=self.lr)
+
+        buf = self.model.rollout_buffer
+        screens = buf.observations["screen"]            # (n_steps, n_envs, 3, 80, 120)
+        actions = buf.actions.reshape(buf.buffer_size, buf.n_envs).astype(np.int64)
+        # A pair (t, t+1) is valid when t+1 did not start a new episode.
+        valid = np.argwhere(buf.episode_starts[1:] == 0)   # rows: (t, env)
+        if len(valid) == 0:
+            return
+        rng = np.random.default_rng(self.num_timesteps)
+        pick = valid[rng.choice(len(valid), size=min(self.pairs, len(valid)), replace=False)]
+        t, e = pick[:, 0], pick[:, 1]
+        dev = self.model.device
+        s0 = torch.as_tensor(screens[t, e], dtype=torch.float32, device=dev) / 255.0
+        s1 = torch.as_tensor(screens[t + 1, e], dtype=torch.float32, device=dev) / 255.0
+        a = torch.as_tensor(actions[t, e], device=dev)
+
+        fe.train()
+        total_loss = fwd_total = 0.0
+        for _ in range(self.steps):
+            logits = fe.idm_logits(s0, s1)
+            idm_loss = self.weight * F.cross_entropy(logits, a)
+            fwd_loss = fe.forward_error(s0, s1, a).mean()   # features detached inside
+            self._opt.zero_grad()
+            (idm_loss + fwd_loss).backward()
+            self._opt.step()
+            total_loss += idm_loss.item()
+            fwd_total += fwd_loss.item()
+        with torch.no_grad():
+            acc = (fe.idm_logits(s0, s1).argmax(1) == a).float().mean().item()
+        self.logger.record("aux/idm_loss", total_loss / self.steps)
+        self.logger.record("aux/idm_acc", acc)
+        self.logger.record("aux/fwd_loss", fwd_total / self.steps)
+
+
 class CoverageCallback(BaseCallback):
     """Renders where the agent has been, as a contact sheet of per-map grids.
 
@@ -133,11 +306,23 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=50_000_000)
     parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints",
+                        help="where the PPO zips are written. A change of "
+                             "feature extractor cannot be resumed into, so a "
+                             "new backbone needs its own directory rather than "
+                             "the old zips being moved out of the way. "
+                             "Savestates still go to checkpoints/, since they "
+                             "are backbone-independent and are what the "
+                             "curriculum anchor is chosen from")
     parser.add_argument("--coverage-every", type=int, default=50_000,
                         help="steps between coverage renders")
-    parser.add_argument("--backbone", choices=("nature", "resnet18"), default="nature",
+    parser.add_argument("--backbone", choices=("nature", "resnet18", "agent"), default="nature",
                         help="nature: small CNN trained from scratch (default). "
-                             "resnet18: frozen ImageNet backbone")
+                             "resnet18: frozen ImageNet backbone. "
+                             "agent: NatureCNN plus a learned text encoder over the "
+                             "on-screen text and an inverse-dynamics head that "
+                             "trains the CNN to predict the pressed button from "
+                             "consecutive screens (see extractor.py)")
     parser.add_argument("--finetune", action="store_true",
                         help="unfreeze the resnet18 backbone; needs far more VRAM")
     parser.add_argument("--max-steps", type=int, default=16384,
@@ -160,7 +345,8 @@ def main():
     # VecMonitor: without it there is no rollout/ep_rew_mean or ep_len_mean in
     # TensorBoard, the one number that answers "is this learning" on a
     # multi-day run.
-    env = VecMonitor(SubprocVecEnv([make_env(args.max_steps) for _ in range(N_ENVS)], start_method="fork"))
+    curiosity = CuriosityWrapper(SubprocVecEnv([make_env(args.max_steps) for _ in range(N_ENVS)], start_method="fork"))
+    env = VecMonitor(curiosity)
 
     if args.resume:
         model = PPO.load(args.resume, env=env, tensorboard_log="runs")
@@ -177,6 +363,14 @@ def main():
                 "features_extractor_kwargs": {"finetune": args.finetune},
             }
             print(f"backbone: resnet18 (finetune={args.finetune})")
+        elif args.backbone == "agent":
+            from extractor import AgentExtractor
+
+            policy_kwargs = {
+                "features_extractor_class": AgentExtractor,
+                "features_extractor_kwargs": {"n_actions": int(env.action_space.n)},
+            }
+            print("backbone: agent (NatureCNN + text encoder + inverse dynamics)")
 
         model = PPO(
             "MultiInputPolicy",  # handles Dict obs: CNN for screen, MLP for state
@@ -198,16 +392,23 @@ def main():
     callbacks = [
         CheckpointCallback(
             save_freq=max(100_000 // N_ENVS, 1),
-            save_path="checkpoints",
+            save_path=args.checkpoint_dir,
             name_prefix="emerald",
         ),
         ProgressCallback(),
+        RewardBreakdownCallback(),
         CoverageCallback(every=args.coverage_every),
     ]
+    # Harmless on other backbones: the callback checks for idm_logits and
+    # returns, and the wrapper pays nothing until attached. Registered
+    # unconditionally so a resume does not need the flag.
+    callbacks.append(InverseDynamicsCallback())
+    if hasattr(model.policy.features_extractor, "forward_error"):
+        curiosity.attach(model.policy.features_extractor, model.device)
 
     model.learn(total_timesteps=args.steps, callback=callbacks,
                 reset_num_timesteps=args.resume is None)
-    model.save("checkpoints/emerald_final")
+    model.save(str(Path(args.checkpoint_dir) / "emerald_final"))
 
 
 if __name__ == "__main__":

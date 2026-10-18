@@ -33,11 +33,53 @@ It reaches Birch's lab and obtains Mudkip, which requires completing the bag sce
 
 ## How it works
 
-**Observation.** Three stacked grayscale frames downscaled to 120x80, plus a 17-value vector decoded from RAM: badge bits, party HP fraction, mean party level, map id, player x/y, money, Pokedex seen and caught.
+**Observation.** Three stacked grayscale frames downscaled to 120x80, plus a
+29-value vector. The first 17 are decoded from RAM: badge bits, party HP
+fraction, mean party level, map id, player x/y, money, Pokedex seen and caught.
+
+The other 12 describe the agent's own situation: a one-hot of the last action,
+whether that action moved it, and how far along each of the three penalty
+counters it is. They exist because the penalties were being charged on state
+the agent could not perceive. `_frozen_steps`, `_block_steps` and
+`_steps_since_reward` lived only in the environment, so "standing at (13,14)
+having pressed up 500 times" and "arriving at (13,14)" were the same input, and
+only one of them was about to be charged -5. Nor could the agent see which
+button it had just pressed, and Gen-3 animates walking on the spot when the way
+is blocked, so a step into a wall and a step that moved look alike for several
+frames. Each counter is reported as a fraction of the limit that charges it, so
+a penalty is visible on the way in rather than arriving as a surprise.
 
 **Actions.** `Discrete(8)` — no-op, up, down, left, right, A, B, start. One button per step, held 23 of 24 frames after a one-frame release. That release matters: Gen-3 gates dialogue, menus and battle moves on a fresh press edge, so a held button reads as a single press no matter how long it is held.
 
-**Vision.** By default a small CNN trained from scratch (NatureCNN), which is the
+**Vision and text.** `--backbone agent` (the current run) is a NatureCNN over the
+screen, a learned text encoder over the on-screen text, and an inverse-dynamics
+head. The text encoder is the smallest thing that earns the name "language
+model": each word of the 64-character text window is hashed (crc32, stable
+across processes) into a 1,024-slot vocabulary and embedded, then mean-pooled
+to 32 values, trained end to end by PPO. It lets the policy tell "Got away
+safely!" from "Wild ZIGZAGOON appeared!" from a menu, which 120x80 pixels do
+not make easy. The inverse-dynamics head predicts which button was pressed
+between two consecutive screens, trained on pairs from the rollout buffer after
+each PPO update with gradients flowing into the shared CNN. Reward alone had
+54 million steps to teach the CNN that a step into a wall and a step that
+moved look different, and did not; this supervises exactly that with labels
+we already hold. `aux/idm_acc` in TensorBoard is the check: chance is 1/8.
+
+The same features drive a curiosity bonus, which is how vision steers where to
+go. A forward model predicts the next screen's features from the current ones
+and the action, and the agent is paid `reward/curiosity` where that prediction
+fails: a place the screen is doing something it has not seen enough of. Where
+the model is right the place is known and the bonus fades on its own. The
+error is divided by its running mean so the bonus is about 0.005 per step on
+an average screen whatever the feature scale, and capped at five times that so
+one strange frame cannot outbid a badge. It is a per-step signal from pixels,
+so it reaches places the RAM novelty terms cannot see: a battle going
+differently, a new menu, an animation. Known limit: screens that are
+unpredictable but useless, like battle animations, also pay (the "noisy TV");
+if `reward/curiosity` dominates while `new_tile` stays flat, lower
+`CuriosityWrapper.BETA`.
+
+The two older options remain. By default a small CNN trained from scratch (NatureCNN), which is the
 standard choice for pixel-based RL. `--backbone resnet18` swaps in a frozen
 ImageNet ResNet18 instead, for comparison. Two caveats worth knowing: the three
 screen channels are consecutive frames rather than RGB, so ResNet's pretrained
@@ -57,11 +99,63 @@ flag exists to answer.
 | Script event flag set | +1 |
 | Trainer defeated | +2 |
 | Experience gained | +0.02 per point (a wild win is 20-40) |
-| Party level gained | +0.2 |
+| Party level gained | +1 |
+| Party HP fraction | +/-3 per full bar, both directions |
 | Running from a battle | -5 |
-| Pokemon seen / caught | +0.1 / +0.5 |
+| Changing an OPTION setting | -10 |
+| Pressing Start | -0.5 |
+| Curiosity (forward-model error) | ~+0.005/step, capped at 0.025 |
+| Pokemon seen / caught | +0.5 / +5 |
 | Whiteout | -5 (does not end the episode) |
 | 2,500 steps earning nothing | -3 |
+| 30 steps walking inside one 8x8 block | -1 |
+| 600 steps frozen on one tile | -5 |
+
+Script and trainer flags are credited potential-style against a mark, like the
+HP term: a rise above the mark is paid, a fall below it is charged at the same
+rate, and the mark follows. A garbage excursion of any length therefore nets
+zero once the real value returns, and trainer flags are never cleared in-game
+so real play is never charged. On top of that a count must be read identically
+three times, on a map that has held still for three steps, before it moves the
+mark at all. The
+54M-step `nature2` run found a pump without that: standing on Birch's lab door
+and warping in and out, each warp's save-block relocation read `trainer 0->7`
+on an identical bogus map id for two steps, which passed the stability gate as
+settled and paid +14. Over nine days that term booked 301,873 against 23 for
+experience, with the party never gaining a point; traced live, 393 such flips
+in 12,000 steps for `trainer +472`. Trainer flags are never cleared in-game, so
+a new all-time high is the only thing that can be real.
+
+The freeze and stall counters clear on positive income booked that step, not
+on the net reward: the symmetric HP term and the loiter charge routinely drag a
+productive step to zero or below, so a wild win that cost 20% HP read as
+"earned nothing" and the freeze counter kept running through the battle.
+
+The freeze penalty covers what the loiter penalty deliberately exempts.
+Loitering is keyed on the same 8x8 grid as the section reward (it was 16x16,
+most of a town, and fired on ordinary exploration). It only counts steps where
+the player moved, so that battles, dialogue and menus are not billed, and that
+exemption made walking into a wall free.
+Measured on the 300k policy over 5,000 steps: position frozen on 94.7% of them,
+the longest single freeze running 1,170 steps against one wall, 53 distinct
+tiles touched in total, and an action mix of 28% up, into that wall. The whole
+1,170-step freeze cost about -1.4, because the stall penalty charges once per
+2,500 steps. 600 steps sits well above a battle (60-150 steps for a wild one, a
+few hundred for a trainer) and well below the observed freeze, and earning
+anything clears the counter, which exempts a battle outright.
+
+The loiter penalty is what the tile cap alone does not cover. A 16x16 block
+holds 256 tiles against a 400-tile per-map cap, so an agent can shuffle around
+a single block and draw tile novelty the whole time without going anywhere.
+Only steps where the player actually moved are counted: a battle, a dialogue
+and an open menu all freeze the position, and billing those would undo the
+battle rewards.
+
+Pokedex and level terms are deliberately large. Both are paid against
+monotonic counters (popcounts of the dex bit arrays, a high-water mark of the
+party level sum), so neither can be farmed by depositing and withdrawing. There
+is no separate bonus for a complete dex: 386 species, several of them version
+exclusives, against a run that has yet to earn one badge.
 
 The per-map tile cap stops the agent farming reward by pacing across a large
 route. Sections are 8x8 tile blocks, sitting between the tile and map terms:
@@ -69,14 +163,78 @@ pacing inside one earns nothing after the first step in, so the signal rewards
 direction rather than shuffling, and unlike tile novelty it is not exhausted by
 the per-map cap.
 
-**Episodes** start from a savestate captured after the intro and end on a badge
+Start is taxed per press rather than per step spent in a menu. Sampling the
+100k policy every 1,000 steps put 7 of 20 frames in one: the start menu twice,
+the party screen twice, the trainer card, an item submenu and a transition, a
+third of its life, with a Torchic at 8/25 HP it never healed. Detecting "a menu
+is open" would be the direct fix, and three RAM scans failed to turn up a marker
+that survived a repeat run, so the entry point is charged instead. Every one of
+those screens is reached through that one button, and nothing the badge needs
+sits behind it: a Pokemon Center heals by talking to the nurse, and the battle
+BAG is reached with A. The button is kept in `ACTIONS` rather than removed, so
+the tax is one constant to undo where dropping it would change the action space.
+The size is measured rather than guessed: at -2 the first rollout booked -103
+per 1,000 steps, which is 51 presses per 1,000 steps and 100x every other term
+combined, so it was set to price a press at about ten new tiles instead.
+
+Nothing but the OPTION screen writes the settings half-word, so a change to it
+is proof the agent went in and fiddled, which it had: TEXT SPEED was found set
+to SLOW, which multiplies the number of steps every mandatory dialogue costs.
+The values are only written back on leaving the screen, so the charge lands on
+exit; entering and leaving without touching anything is billed by the stall
+penalty instead.
+
+TEXT SPEED is also pinned to FAST outright, written back into SaveBlock2 at
+reset and on any step that finds it moved. The penalty alone was not enough:
+it is paid once and the slow text then persists for millions of steps. The pin
+touches bits 0-2 only, so BATTLE SCENE, BATTLE STYLE, SOUND, BUTTON MODE and
+FRAME stay the agent's to set.
+
+The HP term is symmetric on purpose. A one-way heal bonus is farmable: taking
+damage would be free and healing at a Pokemon Center is free and unlimited, so
+"get hurt, walk back, heal" would pay forever. Charging the damage too makes a
+full cycle net zero, and what remains is the useful part, that a hurt party is
+worth less than a healthy one, so walking to a Center pays and the Start menu
+has a reason to be pressed.
+
+**Episodes** start from the furthest *outdoor* progress savestate the agent has
+ever reached, falling back to the post-intro savestate on a fresh clone.
+Outdoor matters: the deepest state on disk was the Oldale Pokemon Center
+interior, and a measured 6,000-step rollout from it never left that one room,
+collecting 3.5 reward in the first moments and then two stall charges for a net
+-2.5. The policy learned its routes outdoors and does not know how to walk out
+of a building. Map group 0 is Hoenn's towns and routes; every other group is an
+interior. With
+`--max-steps 0` an episode only ends on a badge, so `reset()` runs about once
+per process and every restart was otherwise throwing away 14 maps of progress
+and walking out of Littleroot again. Episodes end on a badge
 or at the step cap. `--max-steps 0` removes the cap entirely, in which case
-only a badge ends an episode: `reset()` then never runs, so the per-episode
-exploration sets never clear and tile, section and map novelty are permanently
-exhausted once an area is walked. A whiteout is deliberately not fatal: in this game it warps
+only a badge ends an episode and `reset()` never runs. The exploration sets are
+therefore refreshed on a fixed 50,000-step schedule rather than only on reset.
+Without that they filled once and stayed full: measured over 9 million steps
+from 73.1M, `tiles_visited` was frozen at 486, `maps_visited` at 8, and
+`new_tile`, `new_section`, `new_map`, `exp`, `hp` and `caught` all reported
+exactly 0, leaving reward between -1 and -5.6 per 1,000 steps, all of it stall
+penalty. The schedule is fixed rather than triggered by the stall penalty on
+purpose: the latter would let the agent stall deliberately to make its old
+routes pay again. A whiteout is deliberately not fatal: in this game it warps
 the player to a Pokemon Center with a healed party and play continues. Ending
 the episode on it discarded all accumulated exploration, and measurement showed
 every episode was ending that way at ~18,300 steps against a 65,536 cap.
+
+## Reading whether it is learning
+
+`rollout/ep_rew_mean` is not usable on this run. With `--max-steps 0` an
+episode only ends on a badge, so it never updates, and what it does print is an
+`ep_info_buffer` restored from the checkpoint: for a long stretch it reported
+1.34e6 reward over 6.55e4-step episodes, from a run whose step cap had been
+removed weeks earlier.
+
+Watch `reward/*` instead. Every reward line is booked against a named term and
+the totals are drained once per rollout, so TensorBoard carries a per-1,000-step
+rate for each: `reward/new_tile`, `reward/exp`, `reward/caught`, `reward/loiter`
+and so on, plus `reward/total`. It is episode-independent, and a term that
+starts farming itself shows up as a curve climbing away from the others.
 
 ## Layout
 
@@ -86,6 +244,7 @@ every episode was ending that way at ~18,300 steps against a 65,536 cap.
 | `env.py` | Gymnasium environment, observations, reward |
 | `train.py` | PPO across 8 subprocess workers |
 | `backbone.py` | Optional pretrained ResNet18 feature extractor |
+| `extractor.py` | Current extractor: NatureCNN + text encoder + inverse-dynamics head |
 | `text.py` | Decodes on-screen text straight from RAM, no OCR |
 | `coverage.py` | Renders the exploration overlay |
 | `stats.py` | Decodes a savestate into readable progress |
