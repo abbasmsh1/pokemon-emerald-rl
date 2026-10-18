@@ -114,6 +114,7 @@ class GameState:
                 "battle": np.zeros(BATTLE_SIZE, dtype=np.float32),
                 "in_battle": False,
                 "enemy_id": (0, 0),
+                "our_moves": (0, 0, 0, 0),
             }
 
         flags = sb1["flags"]
@@ -175,6 +176,7 @@ class GameState:
             "battle": self.battle.read(),
             "in_battle": self.battle.in_battle(),
             "enemy_id": self.battle.enemy_identity(),
+            "our_moves": tuple(self.battle.our_move_ids()) if self.battle.in_battle() else (0, 0, 0, 0),
             "money": money,
             "seen": seen,
             "caught": caught,
