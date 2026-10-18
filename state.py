@@ -10,7 +10,7 @@ import struct
 
 from pygba import PyGBA
 
-from text import read_screen_text
+from text import TextReader
 from pygba.game_wrappers.utils.emerald_utils import (
     ADRESSES,
     SaveBlock2_spec,
@@ -75,6 +75,7 @@ def _popcount(buf) -> int:
 class GameState:
     def __init__(self, gba: PyGBA):
         self.gba = gba
+        self.text = TextReader(gba)
         self._last_good = None
 
     def reset(self) -> None:
@@ -151,7 +152,7 @@ class GameState:
             "pos": (pos["x"], pos["y"]),
             "party_levels": levels,
             "party_exp": party_exp,
-            "screen_text": read_screen_text(self.gba),
+            "screen_text": self.text.read(),
             "party_hp_frac": hp_frac,
             "options": options,
             "money": money,

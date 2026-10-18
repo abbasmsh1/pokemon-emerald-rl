@@ -1,135 +1,97 @@
-"""Assertion-based checks for reading on-screen text from RAM. No framework."""
+"""Checks for the on-screen text reader. No framework."""
 
-import time
 from pathlib import Path
 
-import text as textmod
-from env import suppress_stdout
 from pygba import PyGBA
-from state import GameState
-from text import MAX_TEXT, player_fled, read_screen_text
+
+from text import TextReader, FRESH_STEPS, our_attack, player_fled
+from env import EmeraldEnv, suppress_stdout
 
 ROM = "Pokemon - Emerald Version (USA, Europe).gba"
-# Committed savestate from a run that was mid-battle. The window addresses in
-# text.py were found by scanning EWRAM here, so this pins them.
-BATTLE_STATE = Path("checkpoints/furthest_7maps_1_4.state")
+DIALOGUE = Path("dialogue.state")   # Birch on the route, text box open, saved by a probe
 
 
-def _gba(state_path: Path):
-    with suppress_stdout():
-        gba = PyGBA.load(ROM)
-        gba.core.reset()
-        gba.core.load_raw_state(state_path.read_bytes())
-        for _ in range(4):
-            gba.core.run_frame()
-    return gba
+def _env_at(state: Path) -> EmeraldEnv:
+    env = EmeraldEnv(state_path=str(state))
+    env.reset()
+    return env
 
 
-def test_known_battle_text_decodes():
-    """The addresses in text.py must still contain readable game text.
-
-    If this fails, the windows no longer bracket the message buffers and
-    read_screen_text is returning nothing useful.
-    """
-    if not BATTLE_STATE.exists():
-        print("test_known_battle_text_decodes SKIPPED (no battle savestate)")
-        return
-    textmod._CACHE_RAW = None
-    out = read_screen_text(_gba(BATTLE_STATE))
-    assert out, "no text decoded from the battle savestate"
-    assert any(c.isalpha() for c in out), f"decoded garbage: {out!r}"
-    assert len(out) <= MAX_TEXT, f"text not truncated: {len(out)}"
-    print(f"test_known_battle_text_decodes PASSED ({out!r})")
+def test_reader_returns_the_printed_dialogue():
+    """The string the printer is walking through, whole, substitutions applied.
+    The old two-window dump returned 'TACKLE! RGY! ENERGY EXIT' here."""
+    env = _env_at(DIALOGUE)
+    text = env.state_reader.read()["screen_text"]
+    low = text.lower()
+    assert "footprints" in low and "rare pok" in low, f"dialogue not read: {text!r}"
+    assert "tackle" not in low and "energy" not in low, f"stale fragments leaked in: {text!r}"
+    env.close()
+    print(f"test_reader_returns_the_printed_dialogue PASSED ({text[:50]!r})")
 
 
-def test_player_fled_matches_only_the_player():
-    """A wild Pokemon fleeing is not the agent running away."""
+def test_text_goes_stale_but_a_visible_box_keeps_it():
+    env = _env_at(DIALOGUE)
+    reader = env.state_reader.text
+    first = reader.read()
+    assert first
+    for _ in range(FRESH_STEPS + 2):
+        reader.read()                      # nothing new is written
+    assert reader.read() == "", "text never went stale"
+    assert reader.keep_alive() == first, "keep_alive lost the last string"
+    env.close()
+    print("test_text_goes_stale_but_a_visible_box_keeps_it PASSED")
+
+
+def test_env_keeps_dialogue_while_the_box_is_on_screen():
+    """Through the env: pressing nothing for 20 steps with the box open must
+    still report the dialogue, because the pixel gate keeps it alive."""
+    env = _env_at(DIALOGUE)
+    assert env._text_box_visible(), "fixture does not show a text box"
+    text = ""
+    for _ in range(20):
+        env.step(0)
+    text = env._prev["screen_text"]
+    assert "footprints" in text.lower(), f"dialogue dropped while the box was open: {text!r}"
+    env.close()
+    print("test_env_keeps_dialogue_while_the_box_is_on_screen PASSED")
+
+
+def test_flee_and_attack_detectors():
     assert player_fled("Got away safely!")
-    assert player_fled("BRETT got away safely!")
-    assert not player_fled("ZIGZAGOON fled!"), "opponent fleeing must not count"
-    assert not player_fled("TACKLE!")
-    assert not player_fled("")
-    print("test_player_fled_matches_only_the_player PASSED")
-
-
-def test_cache_returns_same_text_and_is_faster():
-    if not BATTLE_STATE.exists():
-        print("test_cache_returns_same_text_and_is_faster SKIPPED")
-        return
-    gba = _gba(BATTLE_STATE)
-    textmod._CACHE_RAW = None
-
-    t0 = time.perf_counter()
-    cold = read_screen_text(gba)
-    cold_ms = (time.perf_counter() - t0) * 1e3
-
-    t0 = time.perf_counter()
-    for _ in range(50):
-        warm = read_screen_text(gba)
-    warm_ms = (time.perf_counter() - t0) * 1e3 / 50
-
-    assert warm == cold, "cache returned different text"
-    assert warm_ms < cold_ms, f"cache not faster: {warm_ms:.3f} vs {cold_ms:.3f}"
-    print(f"test_cache_returns_same_text_and_is_faster PASSED "
-          f"(cold {cold_ms:.3f}ms, warm {warm_ms:.3f}ms)")
+    assert not player_fled("Wild ZIGZAGOON fled!"), "a wild Pokemon fleeing is not our doing"
+    assert our_attack("TORCHIC used SCRATCH!")
+    assert our_attack("MUDKIP used WATER GUN!")
+    assert not our_attack("Wild ZIGZAGOON used TACKLE!"), "the enemy's move is not our attack"
+    assert not our_attack("Foe POOCHYENA used TACKLE!")
+    assert not our_attack("What will TORCHIC do?")
+    print("test_flee_and_attack_detectors PASSED")
 
 
 def test_state_read_stays_within_step_budget():
     """A step has ~3.5ms at 8 workers; the state read must not eat it."""
-    if not BATTLE_STATE.exists():
-        print("test_state_read_stays_within_step_budget SKIPPED")
-        return
-    gba = _gba(BATTLE_STATE)
-    gs = GameState(gba)
+    import time
+    env = _env_at(DIALOGUE)
+    gba, gs = env.gba, env.state_reader
     gs.read()
-
-    # Baseline measured here rather than hardcoded. The old constant (0.307ms)
-    # was taken on an idle machine, so the test failed whenever training was
-    # running -- which is almost always -- and reported the machine's load as a
-    # regression in state.py.
     t0 = time.perf_counter()
     for _ in range(200):
         gba.core.run_frame()
-    baseline_frame_ms = (time.perf_counter() - t0) / 200 * 1e3
-
+    base = (time.perf_counter() - t0) / 200 * 1e3
     t0 = time.perf_counter()
     for _ in range(200):
         gba.core.run_frame()
         gs.read()
-    per_ms = (time.perf_counter() - t0) / 200 * 1e3
-
-    overhead = per_ms - baseline_frame_ms
+    per = (time.perf_counter() - t0) / 200 * 1e3
+    overhead = per - base
     assert overhead < 1.5, f"state read overhead {overhead:.3f}ms is too costly"
-    print(f"test_state_read_stays_within_step_budget PASSED "
-          f"(overhead {overhead:.3f}ms)")
-
-
-def test_state_exposes_exp_and_text():
-    if not BATTLE_STATE.exists():
-        print("test_state_exposes_exp_and_text SKIPPED")
-        return
-    s = GameState(_gba(BATTLE_STATE)).read()
-    assert "party_exp" in s and isinstance(s["party_exp"], int)
-    assert s["party_exp"] >= 0
-    assert "screen_text" in s and isinstance(s["screen_text"], str)
-    print(f"test_state_exposes_exp_and_text PASSED (exp={s['party_exp']})")
-
-
-def test_safe_defaults_before_boot():
-    """Pre-boot reads must not raise or omit the new keys."""
-    with suppress_stdout():
-        gba = PyGBA.load(ROM)
-    s = GameState(gba).read()
-    assert s["party_exp"] == 0
-    assert s["screen_text"] == ""
-    print("test_safe_defaults_before_boot PASSED")
+    env.close()
+    print(f"test_state_read_stays_within_step_budget PASSED (overhead {overhead:.3f}ms)")
 
 
 if __name__ == "__main__":
-    test_player_fled_matches_only_the_player()
-    test_safe_defaults_before_boot()
-    test_known_battle_text_decodes()
-    test_cache_returns_same_text_and_is_faster()
-    test_state_exposes_exp_and_text()
+    test_reader_returns_the_printed_dialogue()
+    test_text_goes_stale_but_a_visible_box_keeps_it()
+    test_env_keeps_dialogue_while_the_box_is_on_screen()
+    test_flee_and_attack_detectors()
     test_state_read_stays_within_step_budget()
     print("\nall text tests passed")

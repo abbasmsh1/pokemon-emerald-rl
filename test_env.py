@@ -1448,6 +1448,26 @@ def test_long_garbage_window_nets_zero():
     print("test_long_garbage_window_nets_zero PASSED")
 
 
+def test_our_attack_pays_once_per_message():
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    base = dict(s, screen_text="")
+    env._prev = dict(base)
+    env._compute_reward(base)                     # spend exploration
+    env.drain_reward_terms()
+
+    hit = dict(base, screen_text="TORCHIC used SCRATCH!")
+    env._compute_reward(hit)                      # new message: pays
+    env._compute_reward(hit)                      # same line still on screen: no
+    env._compute_reward(dict(base, screen_text="Wild ZIGZAGOON used TACKLE!"))   # theirs: no
+    paid = env.drain_reward_terms().get("attack", 0.0)
+    assert abs(paid - EmeraldEnv.ATTACK_REWARD) < 1e-6, f"attack paid {paid}, expected one {EmeraldEnv.ATTACK_REWARD}"
+    assert EmeraldEnv.ATTACK_REWARD > 0.1
+    env.close()
+    print("test_our_attack_pays_once_per_message PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1513,4 +1533,5 @@ if __name__ == "__main__":
     test_flags_pay_only_for_a_new_high()
     test_counters_clear_on_income_not_net_reward()
     test_long_garbage_window_nets_zero()
+    test_our_attack_pays_once_per_message()
     print("\nall env tests passed")

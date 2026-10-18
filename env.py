@@ -22,7 +22,7 @@ from state import (
     GameState,
     force_fast_text,
 )
-from text import player_fled, read_screen_text
+from text import our_attack, player_fled
 
 SCREEN_SHAPE = (3, 80, 120)
 # 17 game values, then 12 that describe the agent's own situation: the last
@@ -187,6 +187,11 @@ class EmeraldEnv(gym.Env):
     # covered the cost of running, so fleeing stayed close to break-even. At -5
     # running costs ten wins, which is meant to be unambiguous.
     FLEE_PENALTY = -5.0
+    # Our Pokemon using a move: "TORCHIC used SCRATCH!" on screen. Paid once per
+    # message so that choosing to fight is rewarded on the turn it happens,
+    # not only when the experience lands at the end of a battle it may lose.
+    # Small against EXP: a wild win is 0.4-0.8 of experience, an attack 0.2.
+    ATTACK_REWARD = 0.2
     # Pokedex progress, raised from 0.1/0.5. Both are popcounts of the dex's
     # seen/owned bit arrays, which only ever gain bits, so neither can be
     # farmed and both can be paid properly. Catching is the rarer and more
@@ -428,6 +433,10 @@ class EmeraldEnv(gym.Env):
         fixed = (packed & ~TEXT_SPEED_MASK) | TEXT_SPEED_FAST
         return dict(s, options=(button_mode, fixed))
 
+    def _text_box_visible(self) -> bool:
+        """Dialogue boxes are white and fill the bottom 48 rows."""
+        return float(self._raw_frame()[112:160].mean()) > 200.0
+
     def _observation(self, s: dict) -> dict:
         return {
             "screen": np.stack(self._frames, axis=0),
@@ -575,6 +584,12 @@ class EmeraldEnv(gym.Env):
                 reward += self._pay("flee", self.FLEE_PENALTY)
             self._was_fleeing = fleeing
 
+            # Edge on the message text, so one attack pays once however many
+            # steps the line stays on screen.
+            attacking = our_attack(s["screen_text"])
+            if attacking and s["screen_text"] != prev["screen_text"]:
+                reward += self._pay("attack", self.ATTACK_REWARD)
+
             # Counted only while walking; see LOITER_PENALTY.
             block_key = (
                 map_key[0],
@@ -719,6 +734,11 @@ class EmeraldEnv(gym.Env):
             self._refresh_novelty()
 
         s = self._enforce_fast_text(self.state_reader.read())
+        # The text reader lets a string go stale after a few steps; a dialogue
+        # box waiting for A stays on screen far longer. If the bottom of the
+        # frame is a bright text box, keep the last string alive.
+        if not s["screen_text"] and self._text_box_visible():
+            s = dict(s, screen_text=self.state_reader.text.keep_alive())
         self._moved = prev_pos is not None and s["pos"] != prev_pos
 
         # ponytail: badges and whiteout are parsed from the same save-block read that

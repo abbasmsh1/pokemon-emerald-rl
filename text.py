@@ -1,95 +1,107 @@
-"""Read the game's on-screen text straight out of RAM.
+"""Reads the text the game is printing on screen, straight from RAM. No OCR.
 
-No OCR. Pokemon Emerald stores displayed text as charmap-encoded bytes, and
-pygba already ships the decoder, so the text can be read exactly and for free
-rather than inferred from a 240x160 framebuffer.
+Emerald composes every dialogue line, sign, battle message and menu label
+into a string and hands it to a text printer, and the printer walks a
+pointer through that string one character per frame. gTextPrinters[0]'s
+first field (0x020201B0 in the US ROM) is that pointer. Follow it to the
+string it is inside and you have exactly what is on screen, with every
+substitution already applied, whether the string lives in gStringVar4
+(dialogue), gDisplayedStringBattle (battles) or straight in the ROM (menus,
+signs).
 
-The two windows below were found empirically, by scanning EWRAM while a battle
-was on screen and decoding every run of charmap bytes. That scan turned up
-'ZIGZAGOON fled!' at 0x2022e34 and 'MUDKIP' at 0x2021e98. They are deliberately
-windows rather than exact symbol addresses: this project has already lost hours
-to guessed emulator addresses, and a window that brackets the observed hits
-survives small layout differences that a single guessed pointer would not.
+An earlier version dumped two fixed RAM windows instead. That read the FIRST
+60 bytes of gStringVar4 and every stale fragment around it, so the agent was
+fed 'TACKLE! RGY! ENERGY EXIT' for days while the screen said something else.
+Found by looking at the viewer's text line against the screen.
 
-test_text.py pins them by asserting a known string decodes from a committed
-savestate, so if they ever stop containing the text the tests fail loudly.
+Both addresses were found empirically, not assumed: a scan of RAM for
+pointers whose target decodes as text, taken while a dialogue box was open,
+returned 0x020201B0 -> "You throw a BALL now, right?", and tracking it through
+a conversation showed it advancing through gStringVar4 a line at a time.
 """
 
 import re
 
 from pygba.game_wrappers.utils.emerald_utils import EmeraldCharmap
 
-# String-variable region: species names and other substituted words.
-STRINGVAR_START = 0x02021C00
-STRINGVAR_LEN = 0x400
-
-# Battle and dialogue message buffer.
-MESSAGE_START = 0x02022C00
-MESSAGE_LEN = 0x400
-
+PRINTER_CURRENT_CHAR = 0x020201B0   # gTextPrinters[0].printerTemplate.currentChar
 TERMINATOR = 0xFF
-MIN_RUN = 4
-MAX_TEXT = 64
+MAX_SCAN = 400                      # longest string we will follow, either way
+MAX_TEXT = 160
+# A string stays "on screen" this many steps after it was last written, unless
+# the caller can see a text box and keeps it alive longer. Battle messages
+# auto-advance within a few steps; dialogue waits for A and is kept by the box.
+FRESH_STEPS = 12
 
 _PRINTABLE = re.compile(r"[A-Za-z0-9 .,!?'\"\-:;/]+")
 _CHARMAP = EmeraldCharmap()
 
 
-def _decode_window(raw: bytes) -> list[str]:
-    """Every plausible string in a window, in address order."""
-    found = []
-    i = 0
-    while i < len(raw):
-        if raw[i] == TERMINATOR:
-            i += 1
-            continue
-        j = i
-        while j < len(raw) and raw[j] != TERMINATOR and j - i < 120:
-            j += 1
-        if j - i >= MIN_RUN:
+def _clean(decoded: str) -> str:
+    # Control codes decode to odd glyphs; keep the readable runs, joined by spaces.
+    return " ".join(_PRINTABLE.findall(decoded)).strip()
+
+
+class TextReader:
+    """Follows the text printer. One per emulator core, like GameState."""
+
+    def __init__(self, gba):
+        self.gba = gba
+        self._start = None          # address of the string being printed
+        self._end = None
+        self.last = ""              # most recent decoded string, stale or not
+        self._fresh = 0
+
+    def _string_bounds(self, ptr: int) -> tuple[int, int]:
+        """Walk back to the previous terminator and forward to the next."""
+        mem = self.gba.core.memory.u8
+        back = bytes(mem[max(ptr - MAX_SCAN, 0):ptr])
+        start = ptr - (len(back) - back.rfind(bytes([TERMINATOR])) - 1) if TERMINATOR in back else ptr - len(back)
+        fwd = bytes(mem[ptr:ptr + MAX_SCAN])
+        end = ptr + (fwd.find(bytes([TERMINATOR])) if TERMINATOR in fwd else len(fwd))
+        return start, end
+
+    def read(self) -> str:
+        """Text on screen right now, or '' once it has gone stale."""
+        ptr = self.gba.read_u32(PRINTER_CURRENT_CHAR)
+        in_ram = 0x02000000 <= ptr < 0x02040000
+        in_rom = 0x08000000 <= ptr < 0x0A000000
+        if not (in_ram or in_rom):
+            self._fresh = max(self._fresh - 1, 0)
+            return self.last if self._fresh else ""
+
+        if self._start is None or not (self._start <= ptr <= self._end):
+            self._start, self._end = self._string_bounds(ptr)
+            raw = bytes(self.gba.core.memory.u8[self._start:self._end])
             try:
-                decoded = _CHARMAP.decode(raw[i:j + 1])
+                text = _clean(_CHARMAP.decode(raw + bytes([TERMINATOR])))[:MAX_TEXT]
             except Exception:
-                decoded = ""
-            text = decoded.strip()
-            if text and _PRINTABLE.fullmatch(text) and sum(c.isalpha() for c in text) >= 3:
-                found.append(text)
-        i = j + 1
-    return found
+                text = ""
+            if text != self.last:
+                self.last = text
+                self._fresh = FRESH_STEPS
+            return self.last
+        self._fresh = max(self._fresh - 1, 0)
+        return self.last if self._fresh else ""
 
-
-# ponytail: decoding both windows every step costs ~1ms of a ~3.5ms budget,
-# because the scan is a Python loop over 2KB. Dialogue changes rarely, so the
-# raw bytes are compared against the previous step and the decode is skipped on
-# a match. Comparing 2KB is a memcmp; decoding it is not.
-# Ceiling: one cache slot, so two alternating texts would miss every step.
-_CACHE_RAW: bytes | None = None
-_CACHE_TEXT: str = ""
-
-
-def read_screen_text(gba) -> str:
-    """Concatenated on-screen text, truncated to MAX_TEXT characters.
-
-    Both windows sit in EWRAM, which the state reader already touches every
-    step, so pygba's per-frame region cache is warm and the reads are slices.
-    """
-    global _CACHE_RAW, _CACHE_TEXT
-
-    raw = (gba.read_memory(MESSAGE_START, MESSAGE_LEN)
-           + gba.read_memory(STRINGVAR_START, STRINGVAR_LEN))
-    if raw == _CACHE_RAW:
-        return _CACHE_TEXT
-
-    parts = _decode_window(raw[:MESSAGE_LEN]) + _decode_window(raw[MESSAGE_LEN:])
-    _CACHE_RAW = raw
-    _CACHE_TEXT = " ".join(parts)[:MAX_TEXT]
-    return _CACHE_TEXT
+    def keep_alive(self) -> str:
+        """For the caller that can see a text box: the last string, regardless
+        of freshness."""
+        self._fresh = FRESH_STEPS
+        return self.last
 
 
 # The player choosing to run. Distinct from a wild Pokemon fleeing on its own,
 # which is not the agent's doing and must not be penalised.
 _PLAYER_FLED = re.compile(r"got away safely", re.IGNORECASE)
+# Our Pokemon attacking: "TORCHIC used SCRATCH!" but not "Wild ZIGZAGOON used
+# TACKLE!" or "Foe MAY's TORCHIC used ...".
+_OUR_ATTACK = re.compile(r"^(?!wild\b)(?!foe\b)\S+ used \S", re.IGNORECASE)
 
 
 def player_fled(text: str) -> bool:
     return bool(_PLAYER_FLED.search(text))
+
+
+def our_attack(text: str) -> bool:
+    return bool(_OUR_ATTACK.search(text))

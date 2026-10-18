@@ -102,6 +102,7 @@ flag exists to answer.
 | Party level gained | +1 |
 | Party HP fraction | +/-3 per full bar, both directions |
 | Running from a battle | -5 |
+| Our Pokemon uses a move | +0.2 per message |
 | Changing an OPTION setting | -10 |
 | Pressing Start | -0.5 |
 | Curiosity (forward-model error) | ~+0.005/step, capped at 0.025 |
@@ -245,7 +246,7 @@ starts farming itself shows up as a curve climbing away from the others.
 | `train.py` | PPO across 8 subprocess workers |
 | `backbone.py` | Optional pretrained ResNet18 feature extractor |
 | `extractor.py` | Current extractor: NatureCNN + text encoder + inverse-dynamics head |
-| `text.py` | Decodes on-screen text straight from RAM, no OCR |
+| `text.py` | Follows the game's text printer to the exact on-screen string, no OCR |
 | `coverage.py` | Renders the exploration overlay |
 | `stats.py` | Decodes a savestate into readable progress |
 | `baseline.py` | Random-agent exploration gate |
