@@ -10,7 +10,7 @@ import numpy as np  # noqa: E402
 from battle import move_name  # noqa: E402
 from env import EmeraldEnv  # noqa: E402
 from teacher import (ACTION_WORDS, MAX_PROMPT_TOKENS, action_token_ids, build_prompt, choose_action,  # noqa: E402
-                     format_chat, load_model, map_name, run_teacher, summarise_tiles)
+                     format_chat, load_model, map_name, overworld_mask, possible_moves, run_teacher, summarise_tiles)
 from tilemap import CLASSES  # noqa: E402
 
 
@@ -184,13 +184,47 @@ def test_entry_point_runs_as_a_subprocess_without_hanging():
     print("test_entry_point_runs_as_a_subprocess_without_hanging PASSED")
 
 
+def test_possible_moves_and_can_move_line():
+    tiles = np.zeros((9, 11, 15), np.uint8); tiles[CLASSES.index("walkable")] = 1
+    tiles[:, 4, 7] = 0; tiles[CLASSES.index("ledge"), 4, 7] = 1      # north: ledge
+    tiles[:, 5, 8] = 0; tiles[CLASSES.index("blocked"), 5, 8] = 1    # east: blocked
+    assert possible_moves(tiles) == ["down", "left"], possible_moves(tiles)
+    env, s, obs = _fixture(None)
+    obs2 = dict(obs, tiles=tiles)
+    assert "can move: south, west" in build_prompt(dict(s, screen_text=""), obs2, [], False)
+    env.close()
+    print("test_possible_moves_and_can_move_line PASSED")
+
+
+def test_mask_never_presses_into_a_wall_in_the_overworld():
+    model, tok = _model()
+    tiles = np.zeros((9, 11, 15), np.uint8); tiles[CLASSES.index("blocked")] = 1
+    tiles[:, 6, 7] = 0; tiles[CLASSES.index("walkable"), 6, 7] = 1   # only south is open
+    env, s, obs = _fixture(None)
+    s0 = dict(s, screen_text="", in_battle=False); obs0 = dict(obs, tiles=tiles)
+    mask = overworld_mask(s0, obs0)
+    assert mask is not None and not mask[ACTION_WORDS.index("up")] and mask[ACTION_WORDS.index("down")]
+    rng = np.random.default_rng(0)
+    for _ in range(12):
+        a, _ = choose_action(model, tok, build_prompt(s0, obs0, [], False), 0.7, rng, mask)
+        assert ACTION_WORDS[a] not in ("up", "left", "right"), f"pressed {ACTION_WORDS[a]} into a wall"
+    battle_mask = overworld_mask(dict(s0, in_battle=True), obs0)
+    assert battle_mask[ACTION_WORDS.index("up")] and not battle_mask[ACTION_WORDS.index("start")], "directions stay free in a battle; Start never"
+    text_mask = overworld_mask(dict(s0, screen_text="What will TORCHIC do?"), obs0)
+    assert text_mask[ACTION_WORDS.index("left")] and not text_mask[ACTION_WORDS.index("start")]
+    env.close()
+    print("test_mask_never_presses_into_a_wall_in_the_overworld PASSED")
+
+
 if __name__ == "__main__":
     test_move_names()
     test_tile_summary_names_adjacent_and_nearest()
     test_prompt_is_deterministic_and_bounded_on_fixtures()
     test_battle_prompt_marks_move_natures()
     test_prompt_survives_hostile_text()
+    test_possible_moves_and_can_move_line()
     test_action_token_ids_are_distinct_and_eight()
+    test_mask_never_presses_into_a_wall_in_the_overworld()
     test_choose_action_is_valid_on_every_fixture()
     test_battle_fixture_prefers_a_fight_button_over_start()
     test_decision_is_fast_on_gpu()

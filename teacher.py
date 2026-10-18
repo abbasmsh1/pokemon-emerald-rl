@@ -51,6 +51,20 @@ def _direction(dx: int, dy: int) -> str:
     return "south" if dy > 0 else "north"
 
 
+PASSABLE = ("walkable", "grass", "warp")
+ADJACENT = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}    # (dy, dx)
+DIRECTION_NAME = {"up": "north", "down": "south", "left": "west", "right": "east"}
+
+
+def possible_moves(tiles: np.ndarray) -> list[str]:
+    """Directions whose adjacent tile the map says the player can step onto.
+    A ledge is passable only along its jump direction, which the window does
+    not encode, so it counts as blocked here."""
+    cy, cx = TILE_H // 2, TILE_W // 2
+    cls = np.asarray(tiles).argmax(axis=0)
+    return [d for d, (dy, dx) in ADJACENT.items() if CLASSES[int(cls[cy + dy, cx + dx])] in PASSABLE]
+
+
 def summarise_tiles(tiles: np.ndarray) -> str:
     """Adjacent tiles, the nearest grass/door/NPC/water, and off-map edges."""
     cy, cx = TILE_H // 2, TILE_W // 2
@@ -89,7 +103,12 @@ def build_prompt(s: dict, obs: dict, recent: list, moved: bool, frontier: str = 
     lines.append(loc)
     text = _clean_text(s.get("screen_text", ""))
     lines.append(f'text: "{text}"' if text else "text: none")
-    lines.append("tiles: " + summarise_tiles(obs["tiles"]))
+    if not s.get("in_battle"):
+        # The ground around the player matters only when walking; in a battle
+        # the block below replaces it, which also keeps the prompt in budget.
+        lines.append("tiles: " + summarise_tiles(obs["tiles"]))
+        moves_ok = possible_moves(obs["tiles"])
+        lines.append("can move: " + (", ".join(DIRECTION_NAME[d] for d in moves_ok) if moves_ok else "nowhere"))
     if s.get("in_battle"):
         b = s["battle"]
         lines.append(f"battle: enemy HP {int(round(b[1] * 100))}%, our HP {int(round(b[2] * 100))}%")
@@ -148,8 +167,31 @@ def action_token_ids(tok) -> list[int]:
     return ids
 
 
-def choose_action(model, tok, prompt: str, temperature: float = 0.0, rng=None):
-    """(action index, scores[8]) from the next-token logits at the action words."""
+def overworld_mask(s: dict, obs: dict) -> np.ndarray | None:
+    """False for Start always, and for directions the tile window says cannot
+    move the player when walking is what a direction does (no text on
+    screen, not in a battle); in a menu or a battle directions move a cursor
+    and stay free."""
+    mask = np.ones(len(ACTION_WORDS), dtype=bool)
+    # Start is never what the badge needs (a Center heals by talking, the
+    # battle BAG is reached with A) and the reward taxes every press; the
+    # round-1 teacher pressed it 30-80 times per 1,000 steps and the student
+    # would have copied the habit. Masked everywhere.
+    mask[ACTION_WORDS.index("start")] = False
+    if s.get("in_battle") or s.get("screen_text"):
+        return mask
+    ok = set(possible_moves(obs["tiles"]))
+    for d in ADJACENT:
+        if d not in ok:
+            mask[ACTION_WORDS.index(d)] = False
+    return mask
+
+
+def choose_action(model, tok, prompt: str, temperature: float = 0.0, rng=None, mask=None):
+    """(action index, scores[8]) from the next-token logits at the action
+    words. `mask`, when given, removes actions from the choice (their scores
+    are still reported) so a blocked direction is never pressed in the
+    overworld; the first measured teacher pressed one on every step."""
     import torch
 
     ids = getattr(tok, "_action_ids", None)
@@ -159,9 +201,12 @@ def choose_action(model, tok, prompt: str, temperature: float = 0.0, rng=None):
     with torch.no_grad():
         logits = model(**enc).logits[0, -1]
     scores = logits[ids].float().cpu().numpy()
+    choosable = scores.copy()
+    if mask is not None and mask.any():
+        choosable[~mask] = -np.inf
     if temperature <= 0:
-        return int(scores.argmax()), scores
-    z = scores / temperature
+        return int(choosable.argmax()), scores
+    z = choosable / temperature
     probs = np.exp(z - z.max()); probs /= probs.sum()
     rng = rng or np.random.default_rng()
     return int(rng.choice(len(scores), p=probs)), scores
@@ -185,7 +230,7 @@ def frontier_direction(section: tuple[int, int], visited: set, cap: int = 8) -> 
 
 
 def run_teacher(steps: int, demo_dir="demos", shard_steps: int | None = None, keep: int | None = None,
-                temperature: float = 0.0, log_every: int = 1000, env=None, model_tok=None) -> dict:
+                temperature: float = 0.7, log_every: int = 1000, env=None, model_tok=None) -> dict:
     """Play `steps` steps, write a shard every `shard_steps`, prune the ring,
     log a reward ledger every `log_every` steps; returns the counts."""
     import time
@@ -221,7 +266,7 @@ def run_teacher(steps: int, demo_dir="demos", shard_steps: int | None = None, ke
         visited = {(sx, sy) for (gg, nn, sx, sy) in env._sections_ever if (gg, nn) == (g, n)}
         frontier = frontier_direction(section, visited)
         prompt = build_prompt(s, obs, recent, moved, frontier)
-        action, _ = choose_action(model, tok, prompt, temperature, rng)
+        action, _ = choose_action(model, tok, prompt, temperature, rng, overworld_mask(s, obs))
 
         for k in ("screen", "state", "text", "tiles", "battle"):
             buf[k].append(np.asarray(obs[k]))
@@ -287,7 +332,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Let the SLM play and record demonstrations.")
     parser.add_argument("--steps", type=int, default=10**9)
-    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--demo-dir", default="demos")
     args = parser.parse_args()
 
