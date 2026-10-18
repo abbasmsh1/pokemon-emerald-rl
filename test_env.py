@@ -320,15 +320,17 @@ def test_stall_penalty_charges_after_limit():
     # trips the loiter penalty at 30, so this walks a step that changes BOTH
     # tile and block every time, over ground already visited. That is the
     # niche stall still covers: crossing an exhausted map earning nothing.
-    far = EmeraldEnv.BLOCK_SIZE
-    path = [(5, 5), (5 + far, 5)]
+    # Alternating two tiles would trip loiter (2 distinct tiles over 30 moves),
+    # so walk a long line and back: 40 distinct tiles, never fewer than 7 in
+    # any 30-move window.
+    path = [(x, 5) for x in range(40)] + [(x, 5) for x in range(38, 0, -1)]
     for pos in path:                      # spend the novelty on both tiles
         env._compute_reward(dict(s, pos=pos))
     env._steps_since_reward = 0
 
     charged = None
     for i in range(EmeraldEnv.STALL_LIMIT + 2):
-        r = env._compute_reward(dict(s, pos=path[i % 2]))
+        r = env._compute_reward(dict(s, pos=path[i % len(path)]))
         if r < 0:
             charged = i + 1
             break
@@ -859,64 +861,69 @@ def test_pinned_text_speed_is_not_billed_as_a_change():
 
 
 def _walk_in_block(env, s, steps):
-    """Step the reward function along a path that stays inside one BLOCK_SIZE
-    block, moving every step. Returns the per-step rewards."""
-    # x alternates 0,1 inside block 0; y stays put. Always a real move.
+    """Step the reward function along a path that shuffles over two tiles,
+    moving every step. Returns the per-step rewards."""
     return [env._compute_reward(dict(s, pos=(i % 2, 0))) for i in range(steps)]
 
 
-def test_pacing_one_block_is_penalised():
-    """A block holds BLOCK_SIZE**2 tiles against a 400-tile per-map cap, so
-    shuffling in place draws tile novelty without going anywhere."""
+def test_pacing_a_few_tiles_is_penalised():
+    """30 moves over 6 or fewer tiles is shuffling. Measured on the 400k policy:
+    73% of steps repeated the position two steps earlier, on a 3-tile stretch
+    of Route 103."""
     env = EmeraldEnv()
     env.reset()
     s = env.state_reader.read()
-
     _clear_exploration(env)
     env._prev = dict(s, pos=(0, 0))
-    env._block_key = None
-    env._block_steps = 0
+    env._recent_moves.clear()
 
     rewards = _walk_in_block(env, s, EmeraldEnv.LOITER_LIMIT * 2)
     charged = [i for i, r in enumerate(rewards) if r < 0]
-    assert charged, "pacing one block for twice the limit was never charged"
-
+    assert charged, "shuffling two tiles for twice the limit was never charged"
     first = charged[0]
-    # The first step in a block establishes it rather than counting, so the
-    # charge lands on the step after the limit, not on it.
-    assert first >= EmeraldEnv.LOITER_LIMIT, (
-        f"charged at step {first}, before the {EmeraldEnv.LOITER_LIMIT}-step limit"
+    assert EmeraldEnv.LOITER_LIMIT - 1 <= first <= EmeraldEnv.LOITER_LIMIT + 1, (
+        f"charged at step {first}, expected at the {EmeraldEnv.LOITER_LIMIT}-move limit"
     )
-    assert first <= EmeraldEnv.LOITER_LIMIT + 1, (
-        f"charged at step {first}, well past the limit"
-    )
-    assert rewards[first] <= EmeraldEnv.LOITER_PENALTY + 1e-6, (
-        f"loiter charge was {rewards[first]}, expected {EmeraldEnv.LOITER_PENALTY}"
-    )
+    assert rewards[first] <= EmeraldEnv.LOITER_PENALTY + 1e-6
     env.close()
-    print("test_pacing_one_block_is_penalised PASSED")
+    print("test_pacing_a_few_tiles_is_penalised PASSED")
 
 
-def test_leaving_the_block_resets_the_loiter_counter():
-    """Walking somewhere is the point. Crossing out must clear the count."""
+def test_pacing_across_a_block_boundary_is_penalised():
+    """The loophole the 400k policy found: shuffle across x=8, the boundary
+    between two 8x8 blocks, and a per-block counter resets on every crossing.
+    The window has no boundary to straddle."""
     env = EmeraldEnv()
     env.reset()
     s = env.state_reader.read()
-
     _clear_exploration(env)
-    env._prev = dict(s, pos=(0, 0))
-    env._block_key = None
-    env._block_steps = 0
-
-    _walk_in_block(env, s, EmeraldEnv.LOITER_LIMIT - 2)
-    assert env._block_steps > 0
-
-    env._compute_reward(dict(s, pos=(EmeraldEnv.BLOCK_SIZE, 0)))  # next block
-    assert env._block_steps == 0, (
-        f"counter survived a block change: {env._block_steps}"
+    env._prev = dict(s, pos=(7, 13))
+    env._recent_moves.clear()
+    env.drain_reward_terms()
+    for i in range(EmeraldEnv.LOITER_LIMIT * 2):
+        env._compute_reward(dict(s, pos=((7, 13), (8, 13))[i % 2]))   # straddles x=8
+    booked = env.drain_reward_terms().get("loiter", 0.0)
+    assert booked <= EmeraldEnv.LOITER_PENALTY + 1e-6, (
+        f"shuffling across a block boundary booked {booked}; the boundary is still a loophole"
     )
     env.close()
-    print("test_leaving_the_block_resets_the_loiter_counter PASSED")
+    print("test_pacing_across_a_block_boundary_is_penalised PASSED")
+
+
+def test_walking_somewhere_is_not_loitering():
+    """30 moves over 7 or more distinct tiles is going somewhere."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = dict(s, pos=(0, 0))
+    env._compute_reward(dict(s, pos=(0, 0)))       # spend exploration
+    env._recent_moves.clear()
+    env.drain_reward_terms()
+    for i in range(1, EmeraldEnv.LOITER_LIMIT * 3):
+        env._compute_reward(dict(s, pos=(i % 12, 0)))   # a 12-tile line, back and forth
+    assert "loiter" not in env.drain_reward_terms(), "walking a 12-tile line was billed as loitering"
+    env.close()
+    print("test_walking_somewhere_is_not_loitering PASSED")
 
 
 def test_standing_still_is_never_billed_as_loitering():
@@ -925,20 +932,14 @@ def test_standing_still_is_never_billed_as_loitering():
     env = EmeraldEnv()
     env.reset()
     s = env.state_reader.read()
-
     _clear_exploration(env)
     env._prev = dict(s, pos=(3, 3))
-    env._block_key = None
-    env._block_steps = 0
-
-    total = 0.0
+    env._recent_moves.clear()
+    env.drain_reward_terms()
     for _ in range(EmeraldEnv.LOITER_LIMIT * 3):
-        total += env._compute_reward(dict(s, pos=(3, 3)))
-
-    assert env._block_steps == 0, (
-        f"a frozen position accrued {env._block_steps} loiter steps"
-    )
-    assert total > -1.0, f"standing still was billed {total} as loitering"
+        env._compute_reward(dict(s, pos=(3, 3)))
+    assert len(env._recent_moves) == 0, f"a frozen position accrued {len(env._recent_moves)} moves"
+    assert "loiter" not in env.drain_reward_terms(), "standing still was billed as loitering"
     env.close()
     print("test_standing_still_is_never_billed_as_loitering PASSED")
 
@@ -1246,7 +1247,7 @@ def test_observation_reports_the_last_action():
 
 def test_observation_reports_the_penalty_counters():
     """The penalties were being charged on state the agent could not see:
-    _frozen_steps, _block_steps and _steps_since_reward all lived only in the
+    _frozen_steps, _recent_moves and _steps_since_reward all lived only in the
     environment, so the tile it was about to be charged -5 on looked identical
     to the tile it had just arrived at."""
     env = EmeraldEnv()
@@ -1254,7 +1255,8 @@ def test_observation_reports_the_penalty_counters():
     assert obs["state"][26] == 0.0 and obs["state"][28] == 0.0
 
     env._frozen_steps = EmeraldEnv.FREEZE_LIMIT // 2
-    env._block_steps = EmeraldEnv.LOITER_LIMIT // 2
+    for k in range(EmeraldEnv.LOITER_LIMIT // 2):
+        env._recent_moves.append(((0, 0), (k, 0)))
     env._steps_since_reward = EmeraldEnv.STALL_LIMIT // 2
     s = env.state_reader.read()
     vec = env._encode_state(s)
@@ -1510,8 +1512,9 @@ if __name__ == "__main__":
     test_text_speed_is_pinned_to_fast()
     test_pinning_text_speed_leaves_other_options_alone()
     test_pinned_text_speed_is_not_billed_as_a_change()
-    test_pacing_one_block_is_penalised()
-    test_leaving_the_block_resets_the_loiter_counter()
+    test_pacing_a_few_tiles_is_penalised()
+    test_pacing_across_a_block_boundary_is_penalised()
+    test_walking_somewhere_is_not_loitering()
     test_standing_still_is_never_billed_as_loitering()
     test_catching_outweighs_seeing()
     test_a_level_beats_a_handful_of_tiles()

@@ -108,8 +108,8 @@ flag exists to answer.
 | Curiosity (forward-model error) | ~+0.005/step, capped at 0.025 |
 | Pokemon seen / caught | +0.5 / +5 |
 | Whiteout | -5 (does not end the episode) |
-| 2,500 steps earning nothing | -3 |
-| 30 steps walking inside one 8x8 block | -1 |
+| 600 steps earning nothing | -3 |
+| 30 moves covering 6 or fewer tiles | -1 |
 | 600 steps frozen on one tile | -5 |
 
 Script and trainer flags are credited potential-style against a mark, like the
@@ -133,8 +133,11 @@ productive step to zero or below, so a wild win that cost 20% HP read as
 "earned nothing" and the freeze counter kept running through the battle.
 
 The freeze penalty covers what the loiter penalty deliberately exempts.
-Loitering is keyed on the same 8x8 grid as the section reward (it was 16x16,
-most of a town, and fired on ordinary exploration). It only counts steps where
+Loitering is grid-free: the last 30 moves covering 6 or fewer tiles. Two
+earlier versions keyed it on a fixed 16x16 then 8x8 block, and the policy found
+the loophole in both within a day: step one tile sideways every few steps back
+and forth across a block boundary, and the counter resets on every crossing. A
+window of recent moves has no boundary to straddle. It only counts steps where
 the player moved, so that battles, dialogue and menus are not billed, and that
 exemption made walking into a wall free.
 Measured on the 300k policy over 5,000 steps: position frozen on 94.7% of them,

@@ -30,7 +30,7 @@ SCREEN_SHAPE = (3, 80, 120)
 # three penalty counters it is.
 #
 # Those last twelve exist because the penalties were being charged on state the
-# agent could not perceive. _frozen_steps, _block_steps and _steps_since_reward
+# agent could not perceive. _frozen_steps, _recent_moves and _steps_since_reward
 # live in the environment and appeared nowhere in the observation, so "standing
 # at (13,14) having pressed up 500 times" and "arriving at (13,14)" were the
 # same input, and only one of them is about to be charged -5. Neither could the
@@ -249,18 +249,13 @@ class EmeraldEnv(gym.Env):
     # without overwhelming a +100 badge or the dense novelty signal.
     # Charged sooner and harder: 5,000 steps of nothing was ~33 minutes of game
     # time for -1, which barely registered against exploration income.
-    STALL_LIMIT = 2500
+    # 600, down from 2,500. The same policy dodged the freeze penalty (600 steps
+    # without moving) by moving one tile every four steps, so stall is now the
+    # catch-all at the same horizon: 600 steps earning nothing is four minutes
+    # of game time, pathological in a battle, a menu or the overworld alike.
+    STALL_LIMIT = 600
     STALL_PENALTY = -3.0
 
-    # Pacing inside one BLOCK_SIZE block. Distinct from the stall penalty, which
-    # only fires when nothing at all is earned: a block holds 256 tiles against
-    # a 400-tile per-map cap, so an agent can shuffle around one block and draw
-    # tile novelty the whole time without ever going anywhere.
-    #
-    # Only steps where the player actually MOVED are counted. A battle, a
-    # dialogue and an open menu all hold the position frozen, and they are the
-    # things worth doing stationary -- billing them would undo the battle
-    # rewards. "Walking in the same block" is taken literally.
     # Exploration novelty is exhaustible, and with --max-steps 0 it was being
     # exhausted permanently. reset() only runs when an episode ends, an episode
     # only ends on a badge, and no badge has ever been earned, so the visited
@@ -279,13 +274,25 @@ class EmeraldEnv(gym.Env):
     # interval), and collecting it means walking rather than standing still.
     NOVELTY_REFRESH_STEPS = 50_000
 
-    # 8, the same grid as the section reward, not 16. At 16 a block held 256
-    # tiles, which is most of a town, and 30 moves inside it is ordinary
-    # walking; the charge fired on exploration as often as on pacing. At 8 a
-    # block is 64 tiles, crossed in at most 8 moves, so 30 moves inside one is
-    # unambiguous shuffling.
-    BLOCK_SIZE = 8
+    # Pacing: the last LOITER_LIMIT moves covered no more than LOITER_DISTINCT
+    # tiles. Distinct from the stall penalty, which only fires when nothing at
+    # all is earned: shuffling over a few fresh tiles draws tile novelty while
+    # going nowhere.
+    #
+    # Grid-free on purpose. Two earlier versions keyed this on a fixed 16x16
+    # then 8x8 block, and the 400k nature3 policy found the loophole in both
+    # within a day: stand on Route 103's row 13 pressing up into a blocked
+    # tile, step one tile sideways every few steps, and drift back and forth
+    # across x=8, the boundary between two blocks. The block counter reset on
+    # every crossing and never charged. A window of recent moves has no
+    # boundary to straddle: 30 moves over 6 or fewer tiles is shuffling
+    # wherever it happens, and 30 moves over 7 or more is going somewhere.
+    #
+    # Only steps where the player actually MOVED count. A battle, a dialogue
+    # and an open menu hold the position frozen, and they are the things worth
+    # doing stationary; billing them would undo the battle rewards.
     LOITER_LIMIT = 30
+    LOITER_DISTINCT = 6
     LOITER_PENALTY = -1.0
 
     # Standing still, which LOITER_PENALTY deliberately exempts so that battles
@@ -358,8 +365,7 @@ class EmeraldEnv(gym.Env):
         self._max_party_exp = 0
         self._was_fleeing = False
         self._steps_since_reward = 0
-        self._block_key: tuple[int, int, int, int] | None = None
-        self._block_steps = 0
+        self._recent_moves: deque = deque(maxlen=self.LOITER_LIMIT)
         self._frozen_steps = 0
         self._last_action: int | None = None
         self._moved = False
@@ -414,7 +420,7 @@ class EmeraldEnv(gym.Env):
         # Each counter as a fraction of the limit that charges it, so the agent
         # can see a penalty coming instead of being surprised by it.
         vec[26] = min(self._frozen_steps / self.FREEZE_LIMIT, 1.0)
-        vec[27] = min(self._block_steps / self.LOITER_LIMIT, 1.0)
+        vec[27] = len(self._recent_moves) / self.LOITER_LIMIT
         vec[28] = min(self._steps_since_reward / self.STALL_LIMIT, 1.0)
         return np.clip(vec, -1.0, 1.0)
 
@@ -591,20 +597,12 @@ class EmeraldEnv(gym.Env):
                 reward += self._pay("attack", self.ATTACK_REWARD)
 
             # Counted only while walking; see LOITER_PENALTY.
-            block_key = (
-                map_key[0],
-                map_key[1],
-                s["pos"][0] // self.BLOCK_SIZE,
-                s["pos"][1] // self.BLOCK_SIZE,
-            )
-            if block_key != self._block_key:
-                self._block_key = block_key
-                self._block_steps = 0
-            elif s["pos"] != prev["pos"]:
-                self._block_steps += 1
-                if self._block_steps >= self.LOITER_LIMIT:
+            if s["pos"] != prev["pos"]:
+                self._recent_moves.append((map_key, s["pos"]))
+                if (len(self._recent_moves) == self.LOITER_LIMIT
+                        and len(set(self._recent_moves)) <= self.LOITER_DISTINCT):
                     reward += self._pay("loiter", self.LOITER_PENALTY)
-                    self._block_steps = 0
+                    self._recent_moves.clear()
 
             reward += self._pay("seen", self.SEEN_REWARD * max(0, s["seen"] - prev["seen"]))
             reward += self._pay("caught", self.CAUGHT_REWARD * max(0, s["caught"] - prev["caught"]))
@@ -705,8 +703,7 @@ class EmeraldEnv(gym.Env):
         self._max_party_exp = s["party_exp"]
         self._was_fleeing = False
         self._steps_since_reward = 0
-        self._block_key = None
-        self._block_steps = 0
+        self._recent_moves.clear()
         self._frozen_steps = 0
         self._last_action = None
         self._moved = False

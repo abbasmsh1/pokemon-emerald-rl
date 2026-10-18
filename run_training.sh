@@ -9,6 +9,12 @@
 set -u
 cd "/home/abbas/Documents/Projects/Pokemon Agent" || exit 1
 
+# Never run from cached bytecode. A one-digit edit to env.py restored within
+# the same second leaves a .pyc whose mtime and size still match, and a run
+# started seconds later trained with LOITER_DISTINCT = 0 while the file said 6.
+export PYTHONDONTWRITEBYTECODE=1
+rm -rf __pycache__
+
 # NatureCNN, not resnet18. The resnet lineage ran 82 million steps with random
 # conv weights under ImageNet BatchNorm parameters: all 20 conv tensors differed
 # from torchvision's by up to 1.03 while every BatchNorm tensor matched exactly,
