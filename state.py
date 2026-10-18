@@ -6,8 +6,14 @@ Python on first touch per frame; for the 16MB ROM region that costs 1.28ms
 per step against a 7.36ms step budget.
 """
 
+import struct
+
 from pygba import PyGBA
+
+from text import TextReader
 from pygba.game_wrappers.utils.emerald_utils import (
+    ADRESSES,
+    SaveBlock2_spec,
     FLAG_BADGE01_GET,
     SCRIPT_FLAGS_START,
     TRAINER_FLAGS_START,
@@ -17,6 +23,43 @@ from pygba.game_wrappers.utils.emerald_utils import (
 )
 
 POKEDEX_CAPACITY = 386
+
+# Offset of the packed options half-word inside SaveBlock2, derived from
+# pygba's own struct spec rather than hardcoded so it cannot drift if the
+# spec changes. Resolves to 0x14, which matches pokeemerald.
+_OPTIONS_OFFSET = struct.calcsize(
+    "<" + "".join(
+        fmt for name, fmt in SaveBlock2_spec[
+            :[n for n, _ in SaveBlock2_spec].index("options")
+        ]
+    )
+)
+# Bits 0-2 of that half-word. 2 is OPTIONS_TEXT_SPEED_FAST.
+TEXT_SPEED_MASK = 0b111
+TEXT_SPEED_FAST = 2
+
+
+def force_fast_text(gba: PyGBA) -> bool:
+    """Pin TEXT SPEED to FAST, returning True if it had to write.
+
+    The agent reached the OPTION screen and set text speed to SLOW, which
+    multiplies the number of steps every mandatory dialogue costs, and most of
+    what stands between it and the first badge is dialogue. Charging for the
+    change is not enough on its own: the cost is paid once and the slow text
+    then persists for millions of steps, so the setting is held down instead.
+
+    Writes go through mgba's live memory view; PyGBA.read_* reads a per-frame
+    cached copy, so a read back in the same frame still shows the old value.
+    """
+    ptr = gba.read_u32(ADRESSES["gSaveBlock2Ptr"])
+    if ptr == 0:
+        return False
+    addr = ptr + _OPTIONS_OFFSET
+    cur = gba.core.memory.u16[addr]
+    if cur & TEXT_SPEED_MASK == TEXT_SPEED_FAST:
+        return False
+    gba.core.memory.u16[addr] = (cur & ~TEXT_SPEED_MASK) | TEXT_SPEED_FAST
+    return True
 
 
 def _get_flag(flags, flag_id: int) -> bool:
@@ -32,6 +75,7 @@ def _popcount(buf) -> int:
 class GameState:
     def __init__(self, gba: PyGBA):
         self.gba = gba
+        self.text = TextReader(gba)
         self._last_good = None
 
     def reset(self) -> None:
@@ -51,6 +95,8 @@ class GameState:
                 "map": (0, 0),
                 "pos": (0, 0),
                 "party_levels": [],
+                "party_exp": 0,
+                "screen_text": "",
                 "party_hp_frac": 0.0,
                 "money": 0,
                 "seen": 0,
@@ -58,6 +104,7 @@ class GameState:
                 "script_flag_count": 0,
                 "trainer_flag_count": 0,
                 "whiteout": False,
+                "options": (0, 0),
             }
 
         flags = sb1["flags"]
@@ -68,6 +115,10 @@ class GameState:
 
         party = sb1["playerParty"]
         levels = [m["level"] for m in party]
+        # Experience is the fine-grained battle signal. A level-up needs many
+        # wins, so level alone is far too sparse to teach battling, and fleeing
+        # earns exactly zero experience.
+        party_exp = sum(m["box"]["substructs"][0]["experience"] for m in party)
         total_hp = sum(m["hp"] for m in party)
         total_max = sum(m["maxHp"] for m in party)
         hp_frac = (total_hp / total_max) if total_max > 0 else 0.0
@@ -78,6 +129,14 @@ class GameState:
             # A corrupt XOR mid-write can produce absurd values; clamp to the
             # game's own maximum rather than feeding garbage to the network.
             money = max(0, min(money, 999_999))
+
+        # The settings from the OPTION screen: optionsButtonMode plus the
+        # packed half-word holding text speed, battle scene, battle style,
+        # sound and frame. (0, 0) is the "no save block" sentinel, never a real
+        # reading, so env.py can tell a failed read from a genuine change.
+        options = (0, 0)
+        if sb2 is not None:
+            options = (sb2["optionsButtonMode"], sb2["options"])
 
         seen = caught = 0
         if sb2 is not None:
@@ -92,7 +151,10 @@ class GameState:
             "map": (loc["mapGroup"], loc["mapNum"]),
             "pos": (pos["x"], pos["y"]),
             "party_levels": levels,
+            "party_exp": party_exp,
+            "screen_text": self.text.read(),
             "party_hp_frac": hp_frac,
+            "options": options,
             "money": money,
             "seen": seen,
             "caught": caught,
