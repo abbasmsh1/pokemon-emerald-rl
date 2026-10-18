@@ -83,13 +83,21 @@ def test_state_read_stays_within_step_budget():
     gs = GameState(gba)
     gs.read()
 
+    # Baseline measured here rather than hardcoded. The old constant (0.307ms)
+    # was taken on an idle machine, so the test failed whenever training was
+    # running -- which is almost always -- and reported the machine's load as a
+    # regression in state.py.
+    t0 = time.perf_counter()
+    for _ in range(200):
+        gba.core.run_frame()
+    baseline_frame_ms = (time.perf_counter() - t0) / 200 * 1e3
+
     t0 = time.perf_counter()
     for _ in range(200):
         gba.core.run_frame()
         gs.read()
     per_ms = (time.perf_counter() - t0) / 200 * 1e3
 
-    baseline_frame_ms = 0.307
     overhead = per_ms - baseline_frame_ms
     assert overhead < 1.5, f"state read overhead {overhead:.3f}ms is too costly"
     print(f"test_state_read_stays_within_step_budget PASSED "

@@ -15,6 +15,7 @@ def test_read_returns_expected_keys_and_types():
         "badges", "map", "pos", "party_levels", "party_hp_frac",
         "money", "seen", "caught", "script_flag_count",
         "trainer_flag_count", "whiteout", "party_exp", "screen_text",
+        "options",
     }
     assert set(s) == expected, f"key mismatch: {set(s) ^ expected}"
 
@@ -29,6 +30,7 @@ def test_read_returns_expected_keys_and_types():
     assert 0 <= s["seen"] <= POKEDEX_CAPACITY
     assert 0 <= s["caught"] <= POKEDEX_CAPACITY
     assert isinstance(s["whiteout"], bool)
+    assert isinstance(s["options"], tuple) and len(s["options"]) == 2
     print("test_read_returns_expected_keys_and_types PASSED")
 
 
@@ -66,7 +68,11 @@ def test_read_does_not_touch_rom():
     per_call = (time.perf_counter() - t0) / 200
 
     overhead = per_call - baseline_frame
-    assert overhead < 0.5e-3, f"read() overhead {overhead*1e3:.3f}ms suggests a ROM read"
+    # 1.0ms, not 0.5ms: a ROM read costs 1.28ms, so this still catches the
+    # thing it is for, while 0.5ms was inside the noise of a machine that is
+    # running eight training workers almost all the time (measured 0.13ms idle
+    # against 0.59ms under load, with identical code).
+    assert overhead < 1.0e-3, f"read() overhead {overhead*1e3:.3f}ms suggests a ROM read"
     print(f"test_read_does_not_touch_rom PASSED (overhead {overhead*1e3:.3f}ms)")
 
 
