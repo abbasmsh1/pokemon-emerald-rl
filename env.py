@@ -22,6 +22,7 @@ from state import (
     GameState,
     force_fast_text,
 )
+from frontier import nearest_unvisited_distance
 from text import our_attack, player_fled, wild_encounter
 
 SCREEN_SHAPE = (3, 80, 120)
@@ -204,6 +205,19 @@ class EmeraldEnv(gym.Env):
     # it pays for seeking the fights that leveling needs. Running from the
     # encounter costs 5x this, so encounter-and-flee stays clearly negative.
     ENCOUNTER_REWARD = 1.0
+    # Damage dealt, potential-based on the enemy's HP fraction: a fall is paid,
+    # a rise (the enemy healing) is charged at the same rate, and nothing is
+    # booked across a battle's start or end, so a new enemy's full bar is not
+    # a loss and a faint pays its final decrease once. A whole bar is 0.5,
+    # about one wild win's experience.
+    DAMAGE_REWARD = 0.5
+    # Potential-based shaping on the Manhattan distance, in sections, to the
+    # nearest section never visited on this map: a step that shortens it pays,
+    # one that lengthens it charges, so a loop nets zero and nothing can be
+    # farmed. Small by design: it tilts ties toward the edge of what the agent
+    # knows when nothing else is paying. Not a route; there is no goal in it.
+    FRONTIER_REWARD = 0.1
+    FRONTIER_CAP = 8
     # Pokedex progress, raised from 0.1/0.5. Both are popcounts of the dex's
     # seen/owned bit arrays, which only ever gain bits, so neither can be
     # farmed and both can be paid properly. Catching is the rarer and more
@@ -389,6 +403,7 @@ class EmeraldEnv(gym.Env):
         self._steps_since_reward = 0
         self._recent_moves: deque = deque(maxlen=self.LOITER_LIMIT)
         self._frozen_steps = 0
+        self._frontier_prev: int | None = None
         self._last_action: int | None = None
         self._moved = False
         self._reward_terms: dict[str, float] = {}
@@ -534,6 +549,7 @@ class EmeraldEnv(gym.Env):
         if self._prev is not None and map_key != self._prev["map"]:
             self._prev = s
             self._steps_since_map_change = 0
+            self._frontier_prev = None
             return 0.0
         self._steps_since_map_change += 1
 
@@ -566,6 +582,15 @@ class EmeraldEnv(gym.Env):
             if section_key not in self._sections_ever:
                 self._sections_ever.add(section_key)
                 reward += self._pay("first_section", self.FIRST_SECTION_REWARD)
+
+        # Frontier shaping; see FRONTIER_REWARD. The current section was added
+        # to _sections_ever just above, so the distance is never 0 here.
+        self._sections_ever.add(section_key)
+        visited = {(sx, sy) for (g, n, sx, sy) in self._sections_ever if (g, n) == map_key}
+        d = nearest_unvisited_distance(section_key[2:], visited, self.FRONTIER_CAP)
+        if self._frontier_prev is not None:
+            reward += self._pay("frontier", self.FRONTIER_REWARD * (self._frontier_prev - d))
+        self._frontier_prev = d
 
         if prev is not None:
             reward += self._pay("badge", self.BADGE_REWARD * max(0, s["badges"] - prev["badges"]))
@@ -639,6 +664,14 @@ class EmeraldEnv(gym.Env):
                 reward += self._pay("attack", self.ATTACK_REWARD)
             if wild_encounter(s["screen_text"]) and s["screen_text"] != prev["screen_text"]:
                 reward += self._pay("encounter", self.ENCOUNTER_REWARD)
+
+            # Damage dealt; see DAMAGE_REWARD. Only when both steps are in a
+            # battle, so the start (zeros -> full bar) and the end (bar ->
+            # zeros) book nothing.
+            if s["in_battle"] and prev["in_battle"]:
+                delta = float(prev["battle"][1]) - float(s["battle"][1])
+                if delta:
+                    reward += self._pay("damage", self.DAMAGE_REWARD * delta)
 
             # Counted only while walking; see LOITER_PENALTY.
             if s["pos"] != prev["pos"]:
@@ -749,6 +782,7 @@ class EmeraldEnv(gym.Env):
         self._steps_since_reward = 0
         self._recent_moves.clear()
         self._frozen_steps = 0
+        self._frontier_prev = None
         self._last_action = None
         self._moved = False
         return self._observation(s), self._info(s)

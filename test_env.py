@@ -1564,6 +1564,89 @@ def test_first_ever_section_pays_extra_and_survives_refresh():
     print("test_first_ever_section_pays_extra_and_survives_refresh PASSED")
 
 
+def _battle_state(s, in_battle: bool, enemy_hp: float) -> dict:
+    v = np.zeros(12, dtype=np.float32)
+    if in_battle:
+        v[0], v[1], v[2] = 1.0, enemy_hp, 0.8
+    return dict(s, in_battle=in_battle, battle=v)
+
+
+def test_damage_pays_on_enemy_hp_falling_and_charges_on_healing():
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = _battle_state(s, True, 1.0)
+    env._compute_reward(_battle_state(s, True, 1.0))        # prime exploration
+    env.drain_reward_terms()
+
+    env._compute_reward(_battle_state(s, True, 0.6))        # 40% of the bar taken
+    paid = env.drain_reward_terms().get("damage", 0.0)
+    assert abs(paid - 0.4 * EmeraldEnv.DAMAGE_REWARD) < 1e-6 and paid > 0.1, f"damage paid {paid}"
+
+    env._compute_reward(_battle_state(s, True, 0.8))        # enemy healed 20%
+    charged = env.drain_reward_terms().get("damage", 0.0)
+    assert abs(charged + 0.2 * EmeraldEnv.DAMAGE_REWARD) < 1e-6, f"healing charged {charged}"
+    env.close()
+    print("test_damage_pays_on_enemy_hp_falling_and_charges_on_healing PASSED")
+
+
+def test_damage_pays_nothing_across_battle_start_and_end():
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = _battle_state(s, False, 0.0)
+    env._compute_reward(_battle_state(s, False, 0.0))
+    env.drain_reward_terms()
+    env._compute_reward(_battle_state(s, True, 1.0))        # battle starts: full bar appears
+    env._compute_reward(_battle_state(s, True, 0.3))        # damage inside the battle
+    inside = env.drain_reward_terms().get("damage", 0.0)
+    env._compute_reward(_battle_state(s, False, 0.0))       # enemy fainted, battle over, zeros
+    assert "damage" not in env.drain_reward_terms(), "the battle ending was billed as damage"
+    assert abs(inside - 0.7 * EmeraldEnv.DAMAGE_REWARD) < 1e-6, f"in-battle damage paid {inside}"
+    env.close()
+    print("test_damage_pays_nothing_across_battle_start_and_end PASSED")
+
+
+def _frontier_env():
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    size = EmeraldEnv.SECTION_SIZE
+    start = (3 * size, 3 * size)
+    base = dict(s, pos=start)
+    g, n = s["map"]
+    # Everything within two sections of the start is known; the frontier is
+    # three sections out in every direction.
+    env._sections_ever = {(g, n, sx, sy) for sx in range(1, 6) for sy in range(1, 6)}
+    env._prev = dict(base)
+    env._compute_reward(base)                                # prime: d = 3
+    env.drain_reward_terms()
+    return env, base, size
+
+
+def test_frontier_pays_toward_unvisited_and_charges_away_and_loops_net_zero():
+    env, base, size = _frontier_env()
+    east = dict(base, pos=(base["pos"][0] + size, base["pos"][1]))   # d 3 -> 2
+    env._compute_reward(east)
+    toward = env.drain_reward_terms().get("frontier", 0.0)
+    assert abs(toward - EmeraldEnv.FRONTIER_REWARD) < 1e-6 and toward > 0.05, f"toward paid {toward}"
+    env._compute_reward(base)                                         # d 2 -> 3
+    away = env.drain_reward_terms().get("frontier", 0.0)
+    assert abs(away + EmeraldEnv.FRONTIER_REWARD) < 1e-6, f"away charged {away}"
+    env.close()
+    print("test_frontier_pays_toward_unvisited_and_charges_away_and_loops_net_zero PASSED")
+
+
+def test_frontier_pays_nothing_on_a_map_change():
+    env, base, size = _frontier_env()
+    other = dict(base, map=(base["map"][0], base["map"][1] + 1), pos=(0, 0))
+    env._compute_reward(other)                                        # transition step
+    env._compute_reward(other)                                        # first stable step on the new map
+    assert "frontier" not in env.drain_reward_terms(), "a map change was billed as frontier progress"
+    env.close()
+    print("test_frontier_pays_nothing_on_a_map_change PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1635,4 +1718,8 @@ if __name__ == "__main__":
     test_bump_exempts_battles_menus_and_moves()
     test_wild_encounter_pays_once_per_message()
     test_first_ever_section_pays_extra_and_survives_refresh()
+    test_damage_pays_on_enemy_hp_falling_and_charges_on_healing()
+    test_damage_pays_nothing_across_battle_start_and_end()
+    test_frontier_pays_toward_unvisited_and_charges_away_and_loops_net_zero()
+    test_frontier_pays_nothing_on_a_map_change()
     print("\nall env tests passed")

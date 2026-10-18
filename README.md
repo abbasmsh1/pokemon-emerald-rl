@@ -104,6 +104,8 @@ flag exists to answer.
 | Running from a battle | -5 |
 | Our Pokemon uses a move | +0.2 per message |
 | A wild battle starts | +1 per encounter |
+| Damage dealt | +0.5 per enemy HP bar, charged back on healing |
+| Walking toward the nearest never-visited section | +0.1 per section, potential-based |
 | Changing an OPTION setting | -10 |
 | Pressing Start | -0.5 |
 | Pressing a direction without moving (overworld, no text on screen) | -0.05 |
@@ -190,6 +192,21 @@ the tax is one constant to undo where dropping it would change the action space.
 The size is measured rather than guessed: at -2 the first rollout booked -103
 per 1,000 steps, which is 51 presses per 1,000 steps and 100x every other term
 combined, so it was set to price a press at about ten new tiles instead.
+
+Damage is potential-based on the enemy's HP fraction, read from the battle
+Pokemon array: a fall pays, a rise (the enemy healing) charges at the same
+rate, and nothing is booked across a battle's start or end, so a new enemy's
+full bar is not a loss and a faint pays its final decrease once. A whole bar is
+worth about one wild win's experience. It is what makes "win on purpose"
+learnable: the agent is told, on the turn it happens, that the move it chose
+hurt.
+
+Frontier shaping is potential-based on the Manhattan distance, in 8x8
+sections, to the nearest section never visited on the current map. A step
+that shortens it pays 0.1, one that lengthens it charges 0.1, so a loop nets
+zero and nothing can be farmed. It is deliberately small: when nothing else is
+paying it tilts the agent toward the edge of what it knows. It is not a route;
+there is no goal in it, only "unexplored is that way".
 
 Nothing but the OPTION screen writes the settings half-word, so a change to it
 is proof the agent went in and fiddled, which it had: TEXT SPEED was found set
