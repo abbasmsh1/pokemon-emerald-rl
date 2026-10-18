@@ -105,6 +105,7 @@ flag exists to answer.
 | Our Pokemon uses a move | +0.2 per message |
 | Changing an OPTION setting | -10 |
 | Pressing Start | -0.5 |
+| Pressing a direction without moving (overworld, no text on screen) | -0.05 |
 | Curiosity (forward-model error) | ~+0.005/step, capped at 0.025 |
 | Pokemon seen / caught | +0.5 / +5 |
 | Whiteout | -5 (does not end the episode) |
@@ -166,6 +167,14 @@ route. Sections are 8x8 tile blocks, sitting between the tile and map terms:
 pacing inside one earns nothing after the first step in, so the signal rewards
 direction rather than shuffling, and unlike tile novelty it is not exhausted by
 the per-map cap.
+
+Bumping is the targeted charge for walking into things. The 400k policy spent
+a quarter of its actions pressing up into a blocked tile, and nothing billed it:
+loiter and freeze exempt stationary steps so that battles are not taxed. A
+direction press that does not move the player costs one new tile's worth, but
+only in the overworld with no text on screen, because in a battle, a menu or a
+dialogue a direction press moves a cursor and never the player, and the text
+reader tells those apart.
 
 Start is taxed per press rather than per step spent in a menu. Sampling the
 100k policy every 1,000 steps put 7 of 20 frames in one: the start menu twice,

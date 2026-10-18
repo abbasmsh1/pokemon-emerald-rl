@@ -1470,6 +1470,47 @@ def test_our_attack_pays_once_per_message():
     print("test_our_attack_pays_once_per_message PASSED")
 
 
+def test_pressing_into_a_wall_is_charged():
+    """The 400k policy spent 25% of its actions pressing up into a blocked
+    tile with nothing billing it."""
+    env = EmeraldEnv()
+    env.reset()
+    s = dict(env.state_reader.read(), screen_text="")
+    env._moved = False
+    env._text_box_visible = lambda: False
+    env.drain_reward_terms()
+    r = env._bump("up", s, stable=True, had_prev=True)
+    assert r <= EmeraldEnv.BUMP_PENALTY + 1e-9 < 0, f"a blocked press paid {r}"
+    assert env.drain_reward_terms().get("bump") == EmeraldEnv.BUMP_PENALTY
+    env.close()
+    print("test_pressing_into_a_wall_is_charged PASSED")
+
+
+def test_bump_exempts_battles_menus_and_moves():
+    """Direction presses move a cursor, not the player, whenever text is on
+    screen; and a press that moved is not a bump."""
+    env = EmeraldEnv()
+    env.reset()
+    base = dict(env.state_reader.read(), screen_text="")
+    env._text_box_visible = lambda: False
+    cases = {
+        "text on screen":     (dict(base, screen_text="What will TORCHIC do?"), False, "up", True, True),
+        "dialogue box":       (base, False, "up", True, True),
+        "it moved":           (base, True, "up", True, True),
+        "not a direction":    (base, False, "A", True, True),
+        "map in transition":  (base, False, "up", False, True),
+        "first step":         (base, False, "up", True, False),
+    }
+    for name, (s, moved, key, stable, had_prev) in cases.items():
+        env._moved = moved
+        env._text_box_visible = (lambda: True) if name == "dialogue box" else (lambda: False)
+        env.drain_reward_terms()
+        r = env._bump(key, s, stable, had_prev)
+        assert r == 0.0 and "bump" not in env.drain_reward_terms(), f"{name}: billed {r} as a bump"
+    env.close()
+    print("test_bump_exempts_battles_menus_and_moves PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1537,4 +1578,6 @@ if __name__ == "__main__":
     test_counters_clear_on_income_not_net_reward()
     test_long_garbage_window_nets_zero()
     test_our_attack_pays_once_per_message()
+    test_pressing_into_a_wall_is_charged()
+    test_bump_exempts_battles_menus_and_moves()
     print("\nall env tests passed")

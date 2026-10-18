@@ -243,6 +243,16 @@ class EmeraldEnv(gym.Env):
     # of menu time, worth 1-2 of forgone exploration, so the charge is set near
     # that. It still prices a press at ten new tiles.
     START_PENALTY = -0.5
+    # Pressing a direction and not moving: a wall, a ledge from below, water,
+    # the map's edge. The 400k nature3 policy spent 25% of its actions pressing
+    # up into a blocked tile on Route 103, and nothing billed it: the loiter and
+    # freeze terms exempt stationary steps so that battles are not taxed. This
+    # is the targeted version. It is charged only in the overworld with no text
+    # on screen, since in a battle, a menu or a dialogue a direction press moves
+    # a cursor and never the player, and the text reader now tells those apart.
+    # Sized at one new tile: a bump costs what a step somewhere new would earn.
+    BUMP_PENALTY = -0.05
+    _DIRECTIONS = frozenset({"up", "down", "left", "right"})
 
     # Charged every STALL_LIMIT steps that earn nothing at all. At 16,384 steps an
     # episode can absorb at most three of these, so it nudges away from idling
@@ -438,6 +448,21 @@ class EmeraldEnv(gym.Env):
         button_mode, packed = s["options"]
         fixed = (packed & ~TEXT_SPEED_MASK) | TEXT_SPEED_FAST
         return dict(s, options=(button_mode, fixed))
+
+    def _bump(self, key, s: dict, stable: bool, had_prev: bool) -> float:
+        """BUMP_PENALTY if a direction was pressed in the overworld and the
+        player did not move; otherwise 0. Factored out so it can be tested on
+        plain dicts."""
+        if (
+            key in self._DIRECTIONS
+            and had_prev
+            and stable
+            and not self._moved
+            and not s["screen_text"]
+            and not self._text_box_visible()
+        ):
+            return self._pay("bump", self.BUMP_PENALTY)
+        return 0.0
 
     def _text_box_visible(self) -> bool:
         """Dialogue boxes are white and fill the bottom 48 rows."""
@@ -760,6 +785,7 @@ class EmeraldEnv(gym.Env):
         # else. Booked through _pay so the breakdown stays exact.
         if key == "start":
             reward += self._pay("start_press", self.START_PENALTY)
+        reward += self._bump(key, s, stable, prev_pos is not None)
         terminated = self._should_terminate(s, stable)
         # max_steps <= 0 removes the limit entirely. Combined with whiteouts no
         # longer terminating, only a badge then ends an episode, so reset() may
