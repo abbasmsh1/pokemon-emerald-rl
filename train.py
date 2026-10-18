@@ -115,6 +115,30 @@ class RewardBreakdownCallback(BaseCallback):
         self.logger.record("reward/total", sum(totals.values()) / steps * 1000)
 
 
+class TimeoutSubprocVecEnv(SubprocVecEnv):
+    """SubprocVecEnv whose step_wait gives up instead of hanging forever.
+
+    With start_method="fork" every worker inherits every other worker's pipe
+    ends, so when one worker dies its pipe never reaches EOF and the parent
+    blocks in recv() indefinitely. Seen live: a worker raised in state.py at
+    3.2M steps and the trainer sat silent for hours, with systemd seeing a
+    healthy process. Raising here makes it a crash, which Restart=always turns
+    into a resume from the last checkpoint.
+    """
+
+    STEP_TIMEOUT = 120.0   # seconds; a step is milliseconds, a checkpoint write seconds
+
+    def step_wait(self):
+        for remote in self.remotes:
+            if not remote.poll(self.STEP_TIMEOUT):
+                raise RuntimeError(
+                    f"a worker did not answer within {self.STEP_TIMEOUT:.0f}s; "
+                    "it has most likely died (see the traceback above). Exiting so "
+                    "the service resumes from the last checkpoint."
+                )
+        return super().step_wait()
+
+
 class CuriosityWrapper(VecEnvWrapper):
     """Pays the agent for reaching screens the forward model cannot predict.
 
@@ -345,7 +369,7 @@ def main():
     # VecMonitor: without it there is no rollout/ep_rew_mean or ep_len_mean in
     # TensorBoard, the one number that answers "is this learning" on a
     # multi-day run.
-    curiosity = CuriosityWrapper(SubprocVecEnv([make_env(args.max_steps) for _ in range(N_ENVS)], start_method="fork"))
+    curiosity = CuriosityWrapper(TimeoutSubprocVecEnv([make_env(args.max_steps) for _ in range(N_ENVS)], start_method="fork"))
     env = VecMonitor(curiosity)
 
     if args.resume:

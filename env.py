@@ -22,7 +22,10 @@ from state import (
     GameState,
     force_fast_text,
 )
-from text import our_attack, player_fled
+from battle import BATTLE_SIZE
+from frontier import nearest_unvisited_distance
+from tilemap import CLASSES, TILE_H, TILE_W
+from text import our_attack, player_fled, wild_encounter
 
 SCREEN_SHAPE = (3, 80, 120)
 # 17 game values, then 12 that describe the agent's own situation: the last
@@ -30,7 +33,7 @@ SCREEN_SHAPE = (3, 80, 120)
 # three penalty counters it is.
 #
 # Those last twelve exist because the penalties were being charged on state the
-# agent could not perceive. _frozen_steps, _block_steps and _steps_since_reward
+# agent could not perceive. _frozen_steps, _recent_moves and _steps_since_reward
 # live in the environment and appeared nowhere in the observation, so "standing
 # at (13,14) having pressed up 500 times" and "arriving at (13,14)" were the
 # same input, and only one of them is about to be charged -5. Neither could the
@@ -168,6 +171,12 @@ class EmeraldEnv(gym.Env):
     # and unlike tile novelty it is not exhausted by the per-map cap.
     SECTION_SIZE = 8
     NEW_SECTION_REWARD = 0.5
+    # On top of NEW_SECTION_REWARD, once per section for the life of the
+    # process. The per-episode set is refreshed every 50,000 steps so that
+    # novelty never runs dry, but that re-pays a section walked a hundred times
+    # exactly like one never seen. This is the difference between the two.
+    # Cumulative and never cleared, so it cannot be farmed.
+    FIRST_SECTION_REWARD = 1.0
     SCRIPT_FLAG_REWARD = 1.0
     TRAINER_REWARD = 2.0
     # Raised from 0.2. A level is many battles' worth of experience and the
@@ -192,6 +201,25 @@ class EmeraldEnv(gym.Env):
     # not only when the experience lands at the end of a battle it may lose.
     # Small against EXP: a wild win is 0.4-0.8 of experience, an attack 0.2.
     ATTACK_REWARD = 0.2
+    # A wild battle starting, paid once per "Wild X appeared!" message. This is
+    # the grass reward: encounters happen only where wild Pokemon are, so it
+    # pays roaming tall grass without resolving the tile under the player, and
+    # it pays for seeking the fights that leveling needs. Running from the
+    # encounter costs 5x this, so encounter-and-flee stays clearly negative.
+    ENCOUNTER_REWARD = 1.0
+    # Damage dealt, potential-based on the enemy's HP fraction: a fall is paid,
+    # a rise (the enemy healing) is charged at the same rate, and nothing is
+    # booked across a battle's start or end, so a new enemy's full bar is not
+    # a loss and a faint pays its final decrease once. A whole bar is 0.5,
+    # about one wild win's experience.
+    DAMAGE_REWARD = 0.5
+    # Potential-based shaping on the Manhattan distance, in sections, to the
+    # nearest section never visited on this map: a step that shortens it pays,
+    # one that lengthens it charges, so a loop nets zero and nothing can be
+    # farmed. Small by design: it tilts ties toward the edge of what the agent
+    # knows when nothing else is paying. Not a route; there is no goal in it.
+    FRONTIER_REWARD = 0.1
+    FRONTIER_CAP = 8
     # Pokedex progress, raised from 0.1/0.5. Both are popcounts of the dex's
     # seen/owned bit arrays, which only ever gain bits, so neither can be
     # farmed and both can be paid properly. Catching is the rarer and more
@@ -243,24 +271,29 @@ class EmeraldEnv(gym.Env):
     # of menu time, worth 1-2 of forgone exploration, so the charge is set near
     # that. It still prices a press at ten new tiles.
     START_PENALTY = -0.5
+    # Pressing a direction and not moving: a wall, a ledge from below, water,
+    # the map's edge. The 400k nature3 policy spent 25% of its actions pressing
+    # up into a blocked tile on Route 103, and nothing billed it: the loiter and
+    # freeze terms exempt stationary steps so that battles are not taxed. This
+    # is the targeted version. It is charged only in the overworld with no text
+    # on screen, since in a battle, a menu or a dialogue a direction press moves
+    # a cursor and never the player, and the text reader now tells those apart.
+    # Sized at one new tile: a bump costs what a step somewhere new would earn.
+    BUMP_PENALTY = -0.05
+    _DIRECTIONS = frozenset({"up", "down", "left", "right"})
 
     # Charged every STALL_LIMIT steps that earn nothing at all. At 16,384 steps an
     # episode can absorb at most three of these, so it nudges away from idling
     # without overwhelming a +100 badge or the dense novelty signal.
     # Charged sooner and harder: 5,000 steps of nothing was ~33 minutes of game
     # time for -1, which barely registered against exploration income.
-    STALL_LIMIT = 2500
+    # 600, down from 2,500. The same policy dodged the freeze penalty (600 steps
+    # without moving) by moving one tile every four steps, so stall is now the
+    # catch-all at the same horizon: 600 steps earning nothing is four minutes
+    # of game time, pathological in a battle, a menu or the overworld alike.
+    STALL_LIMIT = 600
     STALL_PENALTY = -3.0
 
-    # Pacing inside one BLOCK_SIZE block. Distinct from the stall penalty, which
-    # only fires when nothing at all is earned: a block holds 256 tiles against
-    # a 400-tile per-map cap, so an agent can shuffle around one block and draw
-    # tile novelty the whole time without ever going anywhere.
-    #
-    # Only steps where the player actually MOVED are counted. A battle, a
-    # dialogue and an open menu all hold the position frozen, and they are the
-    # things worth doing stationary -- billing them would undo the battle
-    # rewards. "Walking in the same block" is taken literally.
     # Exploration novelty is exhaustible, and with --max-steps 0 it was being
     # exhausted permanently. reset() only runs when an episode ends, an episode
     # only ends on a badge, and no badge has ever been earned, so the visited
@@ -279,13 +312,25 @@ class EmeraldEnv(gym.Env):
     # interval), and collecting it means walking rather than standing still.
     NOVELTY_REFRESH_STEPS = 50_000
 
-    # 8, the same grid as the section reward, not 16. At 16 a block held 256
-    # tiles, which is most of a town, and 30 moves inside it is ordinary
-    # walking; the charge fired on exploration as often as on pacing. At 8 a
-    # block is 64 tiles, crossed in at most 8 moves, so 30 moves inside one is
-    # unambiguous shuffling.
-    BLOCK_SIZE = 8
+    # Pacing: the last LOITER_LIMIT moves covered no more than LOITER_DISTINCT
+    # tiles. Distinct from the stall penalty, which only fires when nothing at
+    # all is earned: shuffling over a few fresh tiles draws tile novelty while
+    # going nowhere.
+    #
+    # Grid-free on purpose. Two earlier versions keyed this on a fixed 16x16
+    # then 8x8 block, and the 400k nature3 policy found the loophole in both
+    # within a day: stand on Route 103's row 13 pressing up into a blocked
+    # tile, step one tile sideways every few steps, and drift back and forth
+    # across x=8, the boundary between two blocks. The block counter reset on
+    # every crossing and never charged. A window of recent moves has no
+    # boundary to straddle: 30 moves over 6 or fewer tiles is shuffling
+    # wherever it happens, and 30 moves over 7 or more is going somewhere.
+    #
+    # Only steps where the player actually MOVED count. A battle, a dialogue
+    # and an open menu hold the position frozen, and they are the things worth
+    # doing stationary; billing them would undo the battle rewards.
     LOITER_LIMIT = 30
+    LOITER_DISTINCT = 6
     LOITER_PENALTY = -1.0
 
     # Standing still, which LOITER_PENALTY deliberately exempts so that battles
@@ -358,9 +403,9 @@ class EmeraldEnv(gym.Env):
         self._max_party_exp = 0
         self._was_fleeing = False
         self._steps_since_reward = 0
-        self._block_key: tuple[int, int, int, int] | None = None
-        self._block_steps = 0
+        self._recent_moves: deque = deque(maxlen=self.LOITER_LIMIT)
         self._frozen_steps = 0
+        self._frontier_prev: int | None = None
         self._last_action: int | None = None
         self._moved = False
         self._reward_terms: dict[str, float] = {}
@@ -369,13 +414,20 @@ class EmeraldEnv(gym.Env):
         # reward farming and resets each episode, so it would draw a truncated,
         # single-episode picture. This accumulates the real footprint.
         self._coverage: set[tuple[int, int, int, int]] = set()
+        # Sections visited at least once in this process; see FIRST_SECTION_REWARD.
+        self._sections_ever: set[tuple[int, int, int, int]] = set()
 
         self.action_space = gym.spaces.Discrete(len(self.ACTIONS))
         self.observation_space = gym.spaces.Dict({
             "screen": gym.spaces.Box(0, 255, SCREEN_SHAPE, dtype=np.uint8),
             "state": gym.spaces.Box(-1.0, 1.0, (STATE_SIZE,), dtype=np.float32),
             "text": gym.spaces.Box(0, TEXT_VOCAB - 1, (TEXT_TOKENS,), dtype=np.int64),
+            # Exact tile classes around the player and the battle state, both
+            # straight from RAM; see tilemap.py and battle.py.
+            "tiles": gym.spaces.Box(0, 1, (len(CLASSES), TILE_H, TILE_W), dtype=np.uint8),
+            "battle": gym.spaces.Box(0.0, 1.0, (BATTLE_SIZE,), dtype=np.float32),
         })
+        self._tiles: np.ndarray | None = None
 
     def _raw_frame(self) -> np.ndarray:
         """Read the framebuffer directly. Byte-identical to the PIL path and
@@ -414,7 +466,7 @@ class EmeraldEnv(gym.Env):
         # Each counter as a fraction of the limit that charges it, so the agent
         # can see a penalty coming instead of being surprised by it.
         vec[26] = min(self._frozen_steps / self.FREEZE_LIMIT, 1.0)
-        vec[27] = min(self._block_steps / self.LOITER_LIMIT, 1.0)
+        vec[27] = len(self._recent_moves) / self.LOITER_LIMIT
         vec[28] = min(self._steps_since_reward / self.STALL_LIMIT, 1.0)
         return np.clip(vec, -1.0, 1.0)
 
@@ -433,6 +485,21 @@ class EmeraldEnv(gym.Env):
         fixed = (packed & ~TEXT_SPEED_MASK) | TEXT_SPEED_FAST
         return dict(s, options=(button_mode, fixed))
 
+    def _bump(self, key, s: dict, stable: bool, had_prev: bool) -> float:
+        """BUMP_PENALTY if a direction was pressed in the overworld and the
+        player did not move; otherwise 0. Factored out so it can be tested on
+        plain dicts."""
+        if (
+            key in self._DIRECTIONS
+            and had_prev
+            and stable
+            and not self._moved
+            and not s["screen_text"]
+            and not self._text_box_visible()
+        ):
+            return self._pay("bump", self.BUMP_PENALTY)
+        return 0.0
+
     def _text_box_visible(self) -> bool:
         """Dialogue boxes are white and fill the bottom 48 rows."""
         return float(self._raw_frame()[112:160].mean()) > 200.0
@@ -442,6 +509,8 @@ class EmeraldEnv(gym.Env):
             "screen": np.stack(self._frames, axis=0),
             "state": self._encode_state(s),
             "text": tokenize_text(s["screen_text"]),
+            "tiles": self._tiles,
+            "battle": np.clip(s["battle"], 0.0, 1.0).astype(np.float32),
         }
 
     def _refresh_novelty(self) -> None:
@@ -489,6 +558,7 @@ class EmeraldEnv(gym.Env):
         if self._prev is not None and map_key != self._prev["map"]:
             self._prev = s
             self._steps_since_map_change = 0
+            self._frontier_prev = None
             return 0.0
         self._steps_since_map_change += 1
 
@@ -518,6 +588,18 @@ class EmeraldEnv(gym.Env):
         if section_key not in self._visited_sections:
             self._visited_sections.add(section_key)
             reward += self._pay("new_section", self.NEW_SECTION_REWARD)
+            if section_key not in self._sections_ever:
+                self._sections_ever.add(section_key)
+                reward += self._pay("first_section", self.FIRST_SECTION_REWARD)
+
+        # Frontier shaping; see FRONTIER_REWARD. The current section was added
+        # to _sections_ever just above, so the distance is never 0 here.
+        self._sections_ever.add(section_key)
+        visited = {(sx, sy) for (g, n, sx, sy) in self._sections_ever if (g, n) == map_key}
+        d = nearest_unvisited_distance(section_key[2:], visited, self.FRONTIER_CAP)
+        if self._frontier_prev is not None:
+            reward += self._pay("frontier", self.FRONTIER_REWARD * (self._frontier_prev - d))
+        self._frontier_prev = d
 
         if prev is not None:
             reward += self._pay("badge", self.BADGE_REWARD * max(0, s["badges"] - prev["badges"]))
@@ -589,22 +671,27 @@ class EmeraldEnv(gym.Env):
             attacking = our_attack(s["screen_text"])
             if attacking and s["screen_text"] != prev["screen_text"]:
                 reward += self._pay("attack", self.ATTACK_REWARD)
+            if wild_encounter(s["screen_text"]) and s["screen_text"] != prev["screen_text"]:
+                reward += self._pay("encounter", self.ENCOUNTER_REWARD)
+
+            # Damage dealt; see DAMAGE_REWARD. Only when both steps are in a
+            # battle AND on the same foe. The battle array is stale, and the
+            # in-battle flag rises a frame before the new foe is loaded, so a
+            # battle's first in-battle step shows the previous foe; without the
+            # identity check "stale 0 hp -> new foe's full bar" was charged
+            # -0.5 at nearly every battle start, cancelling the KO just paid.
+            if s["in_battle"] and prev["in_battle"] and s["enemy_id"] == prev["enemy_id"]:
+                delta = float(prev["battle"][1]) - float(s["battle"][1])
+                if delta:
+                    reward += self._pay("damage", self.DAMAGE_REWARD * delta)
 
             # Counted only while walking; see LOITER_PENALTY.
-            block_key = (
-                map_key[0],
-                map_key[1],
-                s["pos"][0] // self.BLOCK_SIZE,
-                s["pos"][1] // self.BLOCK_SIZE,
-            )
-            if block_key != self._block_key:
-                self._block_key = block_key
-                self._block_steps = 0
-            elif s["pos"] != prev["pos"]:
-                self._block_steps += 1
-                if self._block_steps >= self.LOITER_LIMIT:
+            if s["pos"] != prev["pos"]:
+                self._recent_moves.append((map_key, s["pos"]))
+                if (len(self._recent_moves) == self.LOITER_LIMIT
+                        and len(set(self._recent_moves)) <= self.LOITER_DISTINCT):
                     reward += self._pay("loiter", self.LOITER_PENALTY)
-                    self._block_steps = 0
+                    self._recent_moves.clear()
 
             reward += self._pay("seen", self.SEEN_REWARD * max(0, s["seen"] - prev["seen"]))
             reward += self._pay("caught", self.CAUGHT_REWARD * max(0, s["caught"] - prev["caught"]))
@@ -689,6 +776,7 @@ class EmeraldEnv(gym.Env):
 
         self.state_reader.reset()
         s = self.state_reader.read()
+        self._tiles = self.state_reader.tiles.window()
         self._prev = s
         self._max_flags = {
             "script": s["script_flag_count"],
@@ -705,9 +793,9 @@ class EmeraldEnv(gym.Env):
         self._max_party_exp = s["party_exp"]
         self._was_fleeing = False
         self._steps_since_reward = 0
-        self._block_key = None
-        self._block_steps = 0
+        self._recent_moves.clear()
         self._frozen_steps = 0
+        self._frontier_prev = None
         self._last_action = None
         self._moved = False
         return self._observation(s), self._info(s)
@@ -747,6 +835,10 @@ class EmeraldEnv(gym.Env):
         # Ceiling: a genuine badge or whiteout landing exactly on a transition step
         # is recognised one step late.
         stable = self._prev is None or s["map"] == self._prev["map"]
+        # The window is read from the same relocating save block as the rest;
+        # mid-transition it would be garbage, so the last stable one is reused.
+        if stable or self._tiles is None:
+            self._tiles = self.state_reader.tiles.window()
         if stable:
             # ponytail: same in-flight read that fabricates badges also fabricates
             # coordinates, and pos is uint16, so a garbage value up to 65535 lands
@@ -763,6 +855,7 @@ class EmeraldEnv(gym.Env):
         # else. Booked through _pay so the breakdown stays exact.
         if key == "start":
             reward += self._pay("start_press", self.START_PENALTY)
+        reward += self._bump(key, s, stable, prev_pos is not None)
         terminated = self._should_terminate(s, stable)
         # max_steps <= 0 removes the limit entirely. Combined with whiteouts no
         # longer terminating, only a badge then ends an episode, so reset() may

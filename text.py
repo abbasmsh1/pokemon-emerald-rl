@@ -99,6 +99,16 @@ _PLAYER_FLED = re.compile(r"got away safely", re.IGNORECASE)
 _OUR_ATTACK = re.compile(r"^(?!wild\b)(?!foe\b)\S+ used \S", re.IGNORECASE)
 
 
+# A wild battle starting. Encounters happen only in tall grass, water and
+# caves, so this is "the agent is roaming where wild Pokemon are" without
+# resolving the metatile under the player.
+_WILD_APPEARED = re.compile(r"^wild \S+ appeared", re.IGNORECASE)
+
+
+def wild_encounter(text: str) -> bool:
+    return bool(_WILD_APPEARED.search(text))
+
+
 def player_fled(text: str) -> bool:
     return bool(_PLAYER_FLED.search(text))
 

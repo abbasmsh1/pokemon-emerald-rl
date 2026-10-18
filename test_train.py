@@ -71,7 +71,30 @@ def test_curiosity_fades_as_the_forward_model_learns():
     print(f"test_curiosity_fades_as_the_forward_model_learns PASSED ({before:.4f} -> {after:.4f})")
 
 
+def test_step_wait_raises_instead_of_hanging():
+    """A dead worker's pipe never closes under fork; step_wait must give up."""
+    from train import TimeoutSubprocVecEnv
+
+    class Silent:
+        def poll(self, timeout):
+            return False
+
+    venv = TimeoutSubprocVecEnv.__new__(TimeoutSubprocVecEnv)
+    venv.remotes = [Silent()]
+    TimeoutSubprocVecEnv.STEP_TIMEOUT = 0.01
+    try:
+        venv.step_wait()
+    except RuntimeError as e:
+        assert "did not answer" in str(e)
+    else:
+        raise AssertionError("step_wait returned instead of raising on a silent worker")
+    finally:
+        TimeoutSubprocVecEnv.STEP_TIMEOUT = 120.0
+    print("test_step_wait_raises_instead_of_hanging PASSED")
+
+
 if __name__ == "__main__":
+    test_step_wait_raises_instead_of_hanging()
     test_unattached_wrapper_changes_nothing()
     test_curiosity_pays_a_bounded_positive_bonus()
     test_curiosity_fades_as_the_forward_model_learns()

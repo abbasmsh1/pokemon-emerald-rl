@@ -37,7 +37,19 @@ It reaches Birch's lab and obtains Mudkip, which requires completing the bag sce
 29-value vector. The first 17 are decoded from RAM: badge bits, party HP
 fraction, mean party level, map id, player x/y, money, Pokedex seen and caught.
 
-The other 12 describe the agent's own situation: a one-hot of the last action,
+Two more keys are exact reads of what a vision model would otherwise have to
+guess. `tiles` is an 11x15 window of tile classes around the player (walkable,
+blocked, tall grass, water, ledge, door or warp, NPC, outside the map, unknown)
+resolved from the map grid in RAM and the tilesets' attribute tables in ROM,
+with NPCs overlaid from the object-event array; every address was found by
+`tools/probe_tilemap.py` and is pinned by a fixture test, and a 300-press
+self-consistency test checks that blocked presses face impassable tiles and
+moves land on passable ones. `battle` is 12 values: in-battle, enemy and own
+HP fractions, PP of our four moves, the level ratio, and for each move whether
+it does damage, from the battle Pokemon array and the ROM move table. Both
+cost under 0.4 ms per step together.
+
+The other 12 state values describe the agent's own situation: a one-hot of the last action,
 whether that action moved it, and how far along each of the three penalty
 counters it is. They exist because the penalties were being charged on state
 the agent could not perceive. `_frozen_steps`, `_block_steps` and
@@ -95,7 +107,7 @@ flag exists to answer.
 | Gym badge | +100 |
 | New map entered | +2 |
 | New tile visited | +0.05, capped at 400/map |
-| New 8x8 section entered | +0.5 |
+| New 8x8 section entered | +0.5, plus +1 the first time ever in the process |
 | Script event flag set | +1 |
 | Trainer defeated | +2 |
 | Experience gained | +0.02 per point (a wild win is 20-40) |
@@ -103,13 +115,17 @@ flag exists to answer.
 | Party HP fraction | +/-3 per full bar, both directions |
 | Running from a battle | -5 |
 | Our Pokemon uses a move | +0.2 per message |
+| A wild battle starts | +1 per encounter |
+| Damage dealt | +0.5 per enemy HP bar, charged back on healing |
+| Walking toward the nearest never-visited section | +0.1 per section, potential-based |
 | Changing an OPTION setting | -10 |
 | Pressing Start | -0.5 |
+| Pressing a direction without moving (overworld, no text on screen) | -0.05 |
 | Curiosity (forward-model error) | ~+0.005/step, capped at 0.025 |
 | Pokemon seen / caught | +0.5 / +5 |
 | Whiteout | -5 (does not end the episode) |
-| 2,500 steps earning nothing | -3 |
-| 30 steps walking inside one 8x8 block | -1 |
+| 600 steps earning nothing | -3 |
+| 30 moves covering 6 or fewer tiles | -1 |
 | 600 steps frozen on one tile | -5 |
 
 Script and trainer flags are credited potential-style against a mark, like the
@@ -133,8 +149,11 @@ productive step to zero or below, so a wild win that cost 20% HP read as
 "earned nothing" and the freeze counter kept running through the battle.
 
 The freeze penalty covers what the loiter penalty deliberately exempts.
-Loitering is keyed on the same 8x8 grid as the section reward (it was 16x16,
-most of a town, and fired on ordinary exploration). It only counts steps where
+Loitering is grid-free: the last 30 moves covering 6 or fewer tiles. Two
+earlier versions keyed it on a fixed 16x16 then 8x8 block, and the policy found
+the loophole in both within a day: step one tile sideways every few steps back
+and forth across a block boundary, and the counter resets on every crossing. A
+window of recent moves has no boundary to straddle. It only counts steps where
 the player moved, so that battles, dialogue and menus are not billed, and that
 exemption made walking into a wall free.
 Measured on the 300k policy over 5,000 steps: position frozen on 94.7% of them,
@@ -164,6 +183,14 @@ pacing inside one earns nothing after the first step in, so the signal rewards
 direction rather than shuffling, and unlike tile novelty it is not exhausted by
 the per-map cap.
 
+Bumping is the targeted charge for walking into things. The 400k policy spent
+a quarter of its actions pressing up into a blocked tile, and nothing billed it:
+loiter and freeze exempt stationary steps so that battles are not taxed. A
+direction press that does not move the player costs one new tile's worth, but
+only in the overworld with no text on screen, because in a battle, a menu or a
+dialogue a direction press moves a cursor and never the player, and the text
+reader tells those apart.
+
 Start is taxed per press rather than per step spent in a menu. Sampling the
 100k policy every 1,000 steps put 7 of 20 frames in one: the start menu twice,
 the party screen twice, the trainer card, an item submenu and a transition, a
@@ -177,6 +204,21 @@ the tax is one constant to undo where dropping it would change the action space.
 The size is measured rather than guessed: at -2 the first rollout booked -103
 per 1,000 steps, which is 51 presses per 1,000 steps and 100x every other term
 combined, so it was set to price a press at about ten new tiles instead.
+
+Damage is potential-based on the enemy's HP fraction, read from the battle
+Pokemon array: a fall pays, a rise (the enemy healing) charges at the same
+rate, and nothing is booked across a battle's start or end, so a new enemy's
+full bar is not a loss and a faint pays its final decrease once. A whole bar is
+worth about one wild win's experience. It is what makes "win on purpose"
+learnable: the agent is told, on the turn it happens, that the move it chose
+hurt.
+
+Frontier shaping is potential-based on the Manhattan distance, in 8x8
+sections, to the nearest section never visited on the current map. A step
+that shortens it pays 0.1, one that lengthens it charges 0.1, so a loop nets
+zero and nothing can be farmed. It is deliberately small: when nothing else is
+paying it tilts the agent toward the edge of what it knows. It is not a route;
+there is no goal in it, only "unexplored is that way".
 
 Nothing but the OPTION screen writes the settings half-word, so a change to it
 is proof the agent went in and fiddled, which it had: TEXT SPEED was found set
@@ -245,7 +287,10 @@ starts farming itself shows up as a curve climbing away from the others.
 | `env.py` | Gymnasium environment, observations, reward |
 | `train.py` | PPO across 8 subprocess workers |
 | `backbone.py` | Optional pretrained ResNet18 feature extractor |
-| `extractor.py` | Current extractor: NatureCNN + text encoder + inverse-dynamics head |
+| `extractor.py` | Current extractor: NatureCNN + text encoder + tile CNN + inverse-dynamics and forward heads |
+| `tilemap.py` | Tile-class window from the map grid; addresses from `tools/probe_tilemap.py` |
+| `battle.py` | Battle state from the battle Pokemon array and the move table |
+| `frontier.py` | Distance to the nearest never-visited section |
 | `text.py` | Follows the game's text printer to the exact on-screen string, no OCR |
 | `coverage.py` | Renders the exploration overlay |
 | `stats.py` | Decodes a savestate into readable progress |

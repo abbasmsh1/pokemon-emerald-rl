@@ -8,9 +8,13 @@ per step against a 7.36ms step budget.
 
 import struct
 
+import numpy as np
+
 from pygba import PyGBA
 
 from text import TextReader
+from tilemap import TileMapReader
+from battle import BATTLE_SIZE, BattleReader
 from pygba.game_wrappers.utils.emerald_utils import (
     ADRESSES,
     SaveBlock2_spec,
@@ -76,6 +80,8 @@ class GameState:
     def __init__(self, gba: PyGBA):
         self.gba = gba
         self.text = TextReader(gba)
+        self.tiles = TileMapReader(gba)
+        self.battle = BattleReader(gba)
         self._last_good = None
 
     def reset(self) -> None:
@@ -105,6 +111,9 @@ class GameState:
                 "trainer_flag_count": 0,
                 "whiteout": False,
                 "options": (0, 0),
+                "battle": np.zeros(BATTLE_SIZE, dtype=np.float32),
+                "in_battle": False,
+                "enemy_id": (0, 0),
             }
 
         flags = sb1["flags"]
@@ -114,6 +123,14 @@ class GameState:
         pos = sb1["pos"]
 
         party = sb1["playerParty"]
+        # A slot can parse with box or substructs None while the game is
+        # writing it (seen live: a worker died on it after 3.2M steps, and with
+        # the fork start method the trainer then hung rather than crashed).
+        # Treat it as the same kind of transient as a negative map id.
+        if any(m.get("box") is None or m["box"].get("substructs") is None for m in party):
+            if self._last_good is not None:
+                return self._last_good
+            party = []
         levels = [m["level"] for m in party]
         # Experience is the fine-grained battle signal. A level-up needs many
         # wins, so level alone is far too sparse to teach battling, and fleeing
@@ -155,6 +172,9 @@ class GameState:
             "screen_text": self.text.read(),
             "party_hp_frac": hp_frac,
             "options": options,
+            "battle": self.battle.read(),
+            "in_battle": self.battle.in_battle(),
+            "enemy_id": self.battle.enemy_identity(),
             "money": money,
             "seen": seen,
             "caught": caught,

@@ -41,10 +41,12 @@ def test_features_dim_matches_output():
         "screen": torch.rand(2, 3, 80, 120),
         "state": torch.zeros(2, space["state"].shape[0]),
         "text": torch.as_tensor(np.stack([tokenize_text("hello world"), tokenize_text("")])).float(),
+        "tiles": torch.zeros(2, 9, 11, 15),
+        "battle": torch.zeros(2, 12),
     }
     out = ext(obs)
     assert out.shape == (2, ext.features_dim), f"{out.shape} vs {ext.features_dim}"
-    assert ext.features_dim == CNN_FEATURES + space["state"].shape[0] + TEXT_EMBED
+    assert ext.features_dim == CNN_FEATURES + space["state"].shape[0] + TEXT_EMBED + 128 + 12
     assert torch.isfinite(out).all()
     print("test_features_dim_matches_output PASSED")
 
@@ -99,9 +101,63 @@ def test_inverse_dynamics_head_learns_from_screen_pairs():
     print(f"test_inverse_dynamics_head_learns_from_screen_pairs PASSED (acc {acc:.2f})")
 
 
+def _obs(space, n=2, tiles=None):
+    import numpy as np
+    t = np.zeros((n, 9, 11, 15), dtype=np.float32) if tiles is None else tiles
+    return {
+        "screen": torch.rand(n, 3, 80, 120),
+        "state": torch.zeros(n, space["state"].shape[0]),
+        "text": torch.as_tensor(np.stack([tokenize_text("hello")] * n)).float(),
+        "tiles": torch.as_tensor(t),
+        "battle": torch.zeros(n, 12),
+    }
+
+
+def test_features_dim_includes_tiles_and_battle():
+    space = _space()
+    ext = AgentExtractor(space, n_actions=8)
+    assert ext.features_dim == 512 + 29 + 32 + 128 + 12, ext.features_dim
+    out = ext(_obs(space))
+    assert out.shape == (2, ext.features_dim)
+    print("test_features_dim_includes_tiles_and_battle PASSED")
+
+
+def test_tile_cnn_reacts_to_tiles():
+    """Same screen, state and text; two different tile windows must give
+    different features, or the tile pathway is dead."""
+    torch.manual_seed(0)
+    space = _space()
+    ext = AgentExtractor(space, n_actions=8)
+    a = np.zeros((1, 9, 11, 15), dtype=np.float32); a[0, 0] = 1.0     # all walkable
+    b = np.zeros((1, 9, 11, 15), dtype=np.float32); b[0, 1] = 1.0     # all blocked
+    screen = torch.rand(1, 3, 80, 120)
+    oa, ob = _obs(space, 1, a), _obs(space, 1, b)
+    oa["screen"] = ob["screen"] = screen
+    with torch.no_grad():
+        fa, fb = ext(oa), ext(ob)
+    assert not torch.allclose(fa, fb), "tile window has no effect on the features"
+    assert torch.allclose(fa[:, :512], fb[:, :512]), "screen features changed with the tiles"
+    print("test_tile_cnn_reacts_to_tiles PASSED")
+
+
+def test_loading_an_extractor_without_tile_weights_fails_loudly():
+    """A checkpoint from before the tile CNN must not load into it silently."""
+    space = _space()
+    ext = AgentExtractor(space, n_actions=8)
+    sd = {k: v for k, v in ext.state_dict().items() if not k.startswith("tiles.")}
+    try:
+        AgentExtractor(space, n_actions=8).load_state_dict(sd, strict=True)
+    except RuntimeError:
+        print("test_loading_an_extractor_without_tile_weights_fails_loudly PASSED")
+        return
+    raise AssertionError("an extractor without tile weights loaded silently")
+
 if __name__ == "__main__":
     test_tokenizer_is_stable_padded_and_in_range()
     test_features_dim_matches_output()
     test_empty_text_is_a_zero_vector()
     test_inverse_dynamics_head_learns_from_screen_pairs()
+    test_features_dim_includes_tiles_and_battle()
+    test_tile_cnn_reacts_to_tiles()
+    test_loading_an_extractor_without_tile_weights_fails_loudly()
     print("\nall extractor tests passed")

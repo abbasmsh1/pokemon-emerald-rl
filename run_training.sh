@@ -9,6 +9,12 @@
 set -u
 cd "/home/abbas/Documents/Projects/Pokemon Agent" || exit 1
 
+# Never run from cached bytecode. A one-digit edit to env.py restored within
+# the same second leaves a .pyc whose mtime and size still match, and a run
+# started seconds later trained with LOITER_DISTINCT = 0 while the file said 6.
+export PYTHONDONTWRITEBYTECODE=1
+rm -rf __pycache__
+
 # NatureCNN, not resnet18. The resnet lineage ran 82 million steps with random
 # conv weights under ImageNet BatchNorm parameters: all 20 conv tensors differed
 # from torchvision's by up to 1.03 while every BatchNorm tensor matched exactly,
@@ -25,7 +31,11 @@ cd "/home/abbas/Documents/Projects/Pokemon Agent" || exit 1
 # on-screen text) and the extractor gained a learned text encoder and an
 # inverse-dynamics head (extractor.py). New observation space, new policy.
 # checkpoints/nature2 keeps the 54M-step lineage that learned the door pump.
-CKPT_DIR=checkpoints/nature3
+# nature4: the observation gained "tiles" (an 11x15 window of tile classes
+# read from the map grid) and "battle" (HP, PP, level ratio, move nature from
+# the battle Pokemon array). New observation space, new policy; nature3 keeps
+# the previous lineage.
+CKPT_DIR=checkpoints/nature4
 ARGS="--steps 100000000 --backbone agent --batch-size 128 --max-steps 0 --coverage-every 250000 --checkpoint-dir $CKPT_DIR"
 MIN_FREE_MB=3000
 LOG=service.log

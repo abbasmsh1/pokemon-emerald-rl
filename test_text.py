@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pygba import PyGBA
 
-from text import TextReader, FRESH_STEPS, our_attack, player_fled
+from text import TextReader, FRESH_STEPS, our_attack, player_fled, wild_encounter
 from env import EmeraldEnv, suppress_stdout
 
 ROM = "Pokemon - Emerald Version (USA, Europe).gba"
@@ -64,6 +64,8 @@ def test_flee_and_attack_detectors():
     assert not our_attack("Wild ZIGZAGOON used TACKLE!"), "the enemy's move is not our attack"
     assert not our_attack("Foe POOCHYENA used TACKLE!")
     assert not our_attack("What will TORCHIC do?")
+    assert wild_encounter("Wild ZIGZAGOON appeared!")
+    assert not wild_encounter("ZIGZAGOON appeared!") and not wild_encounter("Wild ZIGZAGOON fled!")
     print("test_flee_and_attack_detectors PASSED")
 
 

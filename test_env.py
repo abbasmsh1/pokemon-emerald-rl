@@ -117,6 +117,9 @@ def _clear_exploration(env):
     env._visited_maps.clear()
     env._visited_sections.clear()
     env._tiles_per_map.clear()
+    # The first-ever section bonus is cumulative for the process and must be
+    # cleared too, or the first of two "identical" measured calls pays +1 more.
+    env._sections_ever.clear()
 
 
 def test_experience_gain_is_rewarded():
@@ -320,15 +323,17 @@ def test_stall_penalty_charges_after_limit():
     # trips the loiter penalty at 30, so this walks a step that changes BOTH
     # tile and block every time, over ground already visited. That is the
     # niche stall still covers: crossing an exhausted map earning nothing.
-    far = EmeraldEnv.BLOCK_SIZE
-    path = [(5, 5), (5 + far, 5)]
+    # Alternating two tiles would trip loiter (2 distinct tiles over 30 moves),
+    # so walk a long line and back: 40 distinct tiles, never fewer than 7 in
+    # any 30-move window.
+    path = [(x, 5) for x in range(40)] + [(x, 5) for x in range(38, 0, -1)]
     for pos in path:                      # spend the novelty on both tiles
         env._compute_reward(dict(s, pos=pos))
     env._steps_since_reward = 0
 
     charged = None
     for i in range(EmeraldEnv.STALL_LIMIT + 2):
-        r = env._compute_reward(dict(s, pos=path[i % 2]))
+        r = env._compute_reward(dict(s, pos=path[i % len(path)]))
         if r < 0:
             charged = i + 1
             break
@@ -471,6 +476,7 @@ def test_implausible_flag_delta_scores_zero():
         EmeraldEnv.NEW_MAP_REWARD
         + EmeraldEnv.NEW_TILE_REWARD
         + EmeraldEnv.NEW_SECTION_REWARD
+        + EmeraldEnv.FIRST_SECTION_REWARD
     )
     assert r < EmeraldEnv.BADGE_REWARD, f"transient paid {r}, more than a badge"
     assert r <= exploration_ceiling + 1e-6, (
@@ -859,64 +865,69 @@ def test_pinned_text_speed_is_not_billed_as_a_change():
 
 
 def _walk_in_block(env, s, steps):
-    """Step the reward function along a path that stays inside one BLOCK_SIZE
-    block, moving every step. Returns the per-step rewards."""
-    # x alternates 0,1 inside block 0; y stays put. Always a real move.
+    """Step the reward function along a path that shuffles over two tiles,
+    moving every step. Returns the per-step rewards."""
     return [env._compute_reward(dict(s, pos=(i % 2, 0))) for i in range(steps)]
 
 
-def test_pacing_one_block_is_penalised():
-    """A block holds BLOCK_SIZE**2 tiles against a 400-tile per-map cap, so
-    shuffling in place draws tile novelty without going anywhere."""
+def test_pacing_a_few_tiles_is_penalised():
+    """30 moves over 6 or fewer tiles is shuffling. Measured on the 400k policy:
+    73% of steps repeated the position two steps earlier, on a 3-tile stretch
+    of Route 103."""
     env = EmeraldEnv()
     env.reset()
     s = env.state_reader.read()
-
     _clear_exploration(env)
     env._prev = dict(s, pos=(0, 0))
-    env._block_key = None
-    env._block_steps = 0
+    env._recent_moves.clear()
 
     rewards = _walk_in_block(env, s, EmeraldEnv.LOITER_LIMIT * 2)
     charged = [i for i, r in enumerate(rewards) if r < 0]
-    assert charged, "pacing one block for twice the limit was never charged"
-
+    assert charged, "shuffling two tiles for twice the limit was never charged"
     first = charged[0]
-    # The first step in a block establishes it rather than counting, so the
-    # charge lands on the step after the limit, not on it.
-    assert first >= EmeraldEnv.LOITER_LIMIT, (
-        f"charged at step {first}, before the {EmeraldEnv.LOITER_LIMIT}-step limit"
+    assert EmeraldEnv.LOITER_LIMIT - 1 <= first <= EmeraldEnv.LOITER_LIMIT + 1, (
+        f"charged at step {first}, expected at the {EmeraldEnv.LOITER_LIMIT}-move limit"
     )
-    assert first <= EmeraldEnv.LOITER_LIMIT + 1, (
-        f"charged at step {first}, well past the limit"
-    )
-    assert rewards[first] <= EmeraldEnv.LOITER_PENALTY + 1e-6, (
-        f"loiter charge was {rewards[first]}, expected {EmeraldEnv.LOITER_PENALTY}"
-    )
+    assert rewards[first] <= EmeraldEnv.LOITER_PENALTY + 1e-6
     env.close()
-    print("test_pacing_one_block_is_penalised PASSED")
+    print("test_pacing_a_few_tiles_is_penalised PASSED")
 
 
-def test_leaving_the_block_resets_the_loiter_counter():
-    """Walking somewhere is the point. Crossing out must clear the count."""
+def test_pacing_across_a_block_boundary_is_penalised():
+    """The loophole the 400k policy found: shuffle across x=8, the boundary
+    between two 8x8 blocks, and a per-block counter resets on every crossing.
+    The window has no boundary to straddle."""
     env = EmeraldEnv()
     env.reset()
     s = env.state_reader.read()
-
     _clear_exploration(env)
-    env._prev = dict(s, pos=(0, 0))
-    env._block_key = None
-    env._block_steps = 0
-
-    _walk_in_block(env, s, EmeraldEnv.LOITER_LIMIT - 2)
-    assert env._block_steps > 0
-
-    env._compute_reward(dict(s, pos=(EmeraldEnv.BLOCK_SIZE, 0)))  # next block
-    assert env._block_steps == 0, (
-        f"counter survived a block change: {env._block_steps}"
+    env._prev = dict(s, pos=(7, 13))
+    env._recent_moves.clear()
+    env.drain_reward_terms()
+    for i in range(EmeraldEnv.LOITER_LIMIT * 2):
+        env._compute_reward(dict(s, pos=((7, 13), (8, 13))[i % 2]))   # straddles x=8
+    booked = env.drain_reward_terms().get("loiter", 0.0)
+    assert booked <= EmeraldEnv.LOITER_PENALTY + 1e-6, (
+        f"shuffling across a block boundary booked {booked}; the boundary is still a loophole"
     )
     env.close()
-    print("test_leaving_the_block_resets_the_loiter_counter PASSED")
+    print("test_pacing_across_a_block_boundary_is_penalised PASSED")
+
+
+def test_walking_somewhere_is_not_loitering():
+    """30 moves over 7 or more distinct tiles is going somewhere."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = dict(s, pos=(0, 0))
+    env._compute_reward(dict(s, pos=(0, 0)))       # spend exploration
+    env._recent_moves.clear()
+    env.drain_reward_terms()
+    for i in range(1, EmeraldEnv.LOITER_LIMIT * 3):
+        env._compute_reward(dict(s, pos=(i % 12, 0)))   # a 12-tile line, back and forth
+    assert "loiter" not in env.drain_reward_terms(), "walking a 12-tile line was billed as loitering"
+    env.close()
+    print("test_walking_somewhere_is_not_loitering PASSED")
 
 
 def test_standing_still_is_never_billed_as_loitering():
@@ -925,20 +936,14 @@ def test_standing_still_is_never_billed_as_loitering():
     env = EmeraldEnv()
     env.reset()
     s = env.state_reader.read()
-
     _clear_exploration(env)
     env._prev = dict(s, pos=(3, 3))
-    env._block_key = None
-    env._block_steps = 0
-
-    total = 0.0
+    env._recent_moves.clear()
+    env.drain_reward_terms()
     for _ in range(EmeraldEnv.LOITER_LIMIT * 3):
-        total += env._compute_reward(dict(s, pos=(3, 3)))
-
-    assert env._block_steps == 0, (
-        f"a frozen position accrued {env._block_steps} loiter steps"
-    )
-    assert total > -1.0, f"standing still was billed {total} as loitering"
+        env._compute_reward(dict(s, pos=(3, 3)))
+    assert len(env._recent_moves) == 0, f"a frozen position accrued {len(env._recent_moves)} moves"
+    assert "loiter" not in env.drain_reward_terms(), "standing still was billed as loitering"
     env.close()
     print("test_standing_still_is_never_billed_as_loitering PASSED")
 
@@ -1045,7 +1050,9 @@ def test_novelty_refresh_restores_income():
     env._refresh_novelty()
     again = env._compute_reward(s)
     assert again > 0, f"after a refresh the tile paid {again}, expected income"
-    assert abs(again - first) < 1e-6, (
+    # Everything re-pays except the first-ever section bonus, which is
+    # cumulative for the process and is the one thing a refresh must not revive.
+    assert abs(again - (first - EmeraldEnv.FIRST_SECTION_REWARD)) < 1e-6, (
         f"refresh paid {again} against {first} for the same tile"
     )
     env.close()
@@ -1246,7 +1253,7 @@ def test_observation_reports_the_last_action():
 
 def test_observation_reports_the_penalty_counters():
     """The penalties were being charged on state the agent could not see:
-    _frozen_steps, _block_steps and _steps_since_reward all lived only in the
+    _frozen_steps, _recent_moves and _steps_since_reward all lived only in the
     environment, so the tile it was about to be charged -5 on looked identical
     to the tile it had just arrived at."""
     env = EmeraldEnv()
@@ -1254,7 +1261,8 @@ def test_observation_reports_the_penalty_counters():
     assert obs["state"][26] == 0.0 and obs["state"][28] == 0.0
 
     env._frozen_steps = EmeraldEnv.FREEZE_LIMIT // 2
-    env._block_steps = EmeraldEnv.LOITER_LIMIT // 2
+    for k in range(EmeraldEnv.LOITER_LIMIT // 2):
+        env._recent_moves.append(((0, 0), (k, 0)))
     env._steps_since_reward = EmeraldEnv.STALL_LIMIT // 2
     s = env.state_reader.read()
     vec = env._encode_state(s)
@@ -1468,6 +1476,233 @@ def test_our_attack_pays_once_per_message():
     print("test_our_attack_pays_once_per_message PASSED")
 
 
+def test_pressing_into_a_wall_is_charged():
+    """The 400k policy spent 25% of its actions pressing up into a blocked
+    tile with nothing billing it."""
+    env = EmeraldEnv()
+    env.reset()
+    s = dict(env.state_reader.read(), screen_text="")
+    env._moved = False
+    env._text_box_visible = lambda: False
+    env.drain_reward_terms()
+    r = env._bump("up", s, stable=True, had_prev=True)
+    assert r <= EmeraldEnv.BUMP_PENALTY + 1e-9 < 0, f"a blocked press paid {r}"
+    assert env.drain_reward_terms().get("bump") == EmeraldEnv.BUMP_PENALTY
+    env.close()
+    print("test_pressing_into_a_wall_is_charged PASSED")
+
+
+def test_bump_exempts_battles_menus_and_moves():
+    """Direction presses move a cursor, not the player, whenever text is on
+    screen; and a press that moved is not a bump."""
+    env = EmeraldEnv()
+    env.reset()
+    base = dict(env.state_reader.read(), screen_text="")
+    env._text_box_visible = lambda: False
+    cases = {
+        "text on screen":     (dict(base, screen_text="What will TORCHIC do?"), False, "up", True, True),
+        "dialogue box":       (base, False, "up", True, True),
+        "it moved":           (base, True, "up", True, True),
+        "not a direction":    (base, False, "A", True, True),
+        "map in transition":  (base, False, "up", False, True),
+        "first step":         (base, False, "up", True, False),
+    }
+    for name, (s, moved, key, stable, had_prev) in cases.items():
+        env._moved = moved
+        env._text_box_visible = (lambda: True) if name == "dialogue box" else (lambda: False)
+        env.drain_reward_terms()
+        r = env._bump(key, s, stable, had_prev)
+        assert r == 0.0 and "bump" not in env.drain_reward_terms(), f"{name}: billed {r} as a bump"
+    env.close()
+    print("test_bump_exempts_battles_menus_and_moves PASSED")
+
+
+def test_wild_encounter_pays_once_per_message():
+    """The grass reward: encounters only happen where wild Pokemon are."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    base = dict(s, screen_text="")
+    env._prev = dict(base)
+    env._compute_reward(base)
+    env.drain_reward_terms()
+    hit = dict(base, screen_text="Wild ZIGZAGOON appeared!")
+    env._compute_reward(hit)
+    env._compute_reward(hit)                                        # same line: no
+    env._compute_reward(dict(base, screen_text="Go! TORCHIC!"))     # not an encounter
+    paid = env.drain_reward_terms().get("encounter", 0.0)
+    assert abs(paid - EmeraldEnv.ENCOUNTER_REWARD) < 1e-6 and paid > 0.5, f"encounter paid {paid}"
+    assert EmeraldEnv.FLEE_PENALTY + EmeraldEnv.ENCOUNTER_REWARD < -1.0, "encounter-and-flee must stay clearly negative"
+    env.close()
+    print("test_wild_encounter_pays_once_per_message PASSED")
+
+
+def test_first_ever_section_pays_extra_and_survives_refresh():
+    """After a novelty refresh a known section re-pays NEW_SECTION_REWARD only;
+    the first-ever bonus is paid once for the life of the process."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = dict(s)
+    env._compute_reward(s)
+    env._refresh_novelty()
+    env._sections_ever.clear()
+    env.drain_reward_terms()
+
+    far = dict(s, pos=(s["pos"][0] + 5 * EmeraldEnv.SECTION_SIZE, s["pos"][1]))
+    env._compute_reward(far)
+    first = env.drain_reward_terms()
+    assert abs(first.get("first_section", 0.0) - EmeraldEnv.FIRST_SECTION_REWARD) < 1e-6, f"first visit paid {first}"
+    assert first.get("first_section", 0.0) > 0.5
+
+    env._refresh_novelty()                     # the per-episode set forgets it
+    env._compute_reward(far)
+    again = env.drain_reward_terms()
+    assert "first_section" not in again, f"the first-ever bonus was re-paid after a refresh: {again}"
+    assert abs(again.get("new_section", 0.0) - EmeraldEnv.NEW_SECTION_REWARD) < 1e-6, "the per-episode section bonus should still re-pay"
+    env.close()
+    print("test_first_ever_section_pays_extra_and_survives_refresh PASSED")
+
+
+def _battle_state(s, in_battle: bool, enemy_hp: float) -> dict:
+    v = np.zeros(12, dtype=np.float32)
+    if in_battle:
+        v[0], v[1], v[2] = 1.0, enemy_hp, 0.8
+    return dict(s, in_battle=in_battle, battle=v, enemy_id=(309, 777) if in_battle else (0, 0))
+
+
+def test_damage_pays_on_enemy_hp_falling_and_charges_on_healing():
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = _battle_state(s, True, 1.0)
+    env._compute_reward(_battle_state(s, True, 1.0))        # prime exploration
+    env.drain_reward_terms()
+
+    env._compute_reward(_battle_state(s, True, 0.6))        # 40% of the bar taken
+    paid = env.drain_reward_terms().get("damage", 0.0)
+    assert abs(paid - 0.4 * EmeraldEnv.DAMAGE_REWARD) < 1e-6 and paid > 0.1, f"damage paid {paid}"
+
+    env._compute_reward(_battle_state(s, True, 0.8))        # enemy healed 20%
+    charged = env.drain_reward_terms().get("damage", 0.0)
+    assert abs(charged + 0.2 * EmeraldEnv.DAMAGE_REWARD) < 1e-6, f"healing charged {charged}"
+    env.close()
+    print("test_damage_pays_on_enemy_hp_falling_and_charges_on_healing PASSED")
+
+
+def test_damage_pays_nothing_across_battle_start_and_end():
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = _battle_state(s, False, 0.0)
+    env._compute_reward(_battle_state(s, False, 0.0))
+    env.drain_reward_terms()
+    env._compute_reward(_battle_state(s, True, 1.0))        # battle starts: full bar appears
+    env._compute_reward(_battle_state(s, True, 0.3))        # damage inside the battle
+    inside = env.drain_reward_terms().get("damage", 0.0)
+    env._compute_reward(_battle_state(s, False, 0.0))       # enemy fainted, battle over, zeros
+    assert "damage" not in env.drain_reward_terms(), "the battle ending was billed as damage"
+    assert abs(inside - 0.7 * EmeraldEnv.DAMAGE_REWARD) < 1e-6, f"in-battle damage paid {inside}"
+    env.close()
+    print("test_damage_pays_nothing_across_battle_start_and_end PASSED")
+
+
+def _frontier_env():
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    size = EmeraldEnv.SECTION_SIZE
+    start = (3 * size, 3 * size)
+    base = dict(s, pos=start)
+    g, n = s["map"]
+    # Everything within two sections of the start is known; the frontier is
+    # three sections out in every direction.
+    env._sections_ever = {(g, n, sx, sy) for sx in range(1, 6) for sy in range(1, 6)}
+    env._prev = dict(base)
+    env._compute_reward(base)                                # prime: d = 3
+    env.drain_reward_terms()
+    return env, base, size
+
+
+def test_frontier_pays_toward_unvisited_and_charges_away_and_loops_net_zero():
+    env, base, size = _frontier_env()
+    east = dict(base, pos=(base["pos"][0] + size, base["pos"][1]))   # d 3 -> 2
+    env._compute_reward(east)
+    toward = env.drain_reward_terms().get("frontier", 0.0)
+    assert abs(toward - EmeraldEnv.FRONTIER_REWARD) < 1e-6 and toward > 0.05, f"toward paid {toward}"
+    env._compute_reward(base)                                         # d 2 -> 3
+    away = env.drain_reward_terms().get("frontier", 0.0)
+    assert abs(away + EmeraldEnv.FRONTIER_REWARD) < 1e-6, f"away charged {away}"
+    env.close()
+    print("test_frontier_pays_toward_unvisited_and_charges_away_and_loops_net_zero PASSED")
+
+
+def test_frontier_pays_nothing_on_a_map_change():
+    env, base, size = _frontier_env()
+    other = dict(base, map=(base["map"][0], base["map"][1] + 1), pos=(0, 0))
+    env._compute_reward(other)                                        # transition step
+    env._compute_reward(other)                                        # first stable step on the new map
+    assert "frontier" not in env.drain_reward_terms(), "a map change was billed as frontier progress"
+    env.close()
+    print("test_frontier_pays_nothing_on_a_map_change PASSED")
+
+
+def test_observation_has_tiles_and_battle():
+    env = EmeraldEnv()
+    obs, _ = env.reset()
+    assert env.observation_space.contains(obs), "observation outside the declared space"
+    assert obs["tiles"].shape == (9, 11, 15) and obs["tiles"].dtype == np.uint8
+    assert obs["battle"].shape == (12,) and obs["battle"].dtype == np.float32
+    obs, *_ = env.step(0)
+    assert env.observation_space.contains(obs)
+    env.close()
+    print("test_observation_has_tiles_and_battle PASSED")
+
+
+def test_tiles_reuse_previous_window_during_map_transition():
+    """A mid-relocation read must not reach the policy as a window of garbage;
+    the previous stable window is reused until the map id settles."""
+    env = EmeraldEnv()
+    obs, _ = env.reset()
+    stable_tiles = obs["tiles"].copy()
+    real_read, real_window = env.state_reader.read, env.state_reader.tiles.window
+    s = real_read()
+    bogus = dict(s, map=(s["map"][0], s["map"][1] + 1), pos=(2560, 255))
+    garbage = np.zeros_like(stable_tiles); garbage[8] = 1          # an all-unknown window
+    env.state_reader.read = lambda: bogus
+    env.state_reader.tiles.window = lambda: garbage                # what a relocated read would yield
+    try:
+        obs, *_ = env.step(0)
+    finally:
+        env.state_reader.read, env.state_reader.tiles.window = real_read, real_window
+    assert np.array_equal(obs["tiles"], stable_tiles), "a transition step produced a fresh window"
+    env.close()
+    print("test_tiles_reuse_previous_window_during_map_transition PASSED")
+
+
+def test_damage_pays_nothing_when_the_enemy_changes():
+    """Review finding: gBattleMons is stale, and a battle's first in-battle
+    step still shows the previous enemy, so stale hp -> new enemy's 1.0 was
+    booked as a charge at almost every battle start (and at every trainer
+    switch-in), cancelling the KO just paid. Damage only counts on the same
+    enemy, identified by species and personality."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    a = dict(_battle_state(s, True, 0.0), enemy_id=(309, 12345))     # stale: last foe at 0 hp
+    b = dict(_battle_state(s, True, 1.0), enemy_id=(286, 99999))     # the new foe, full bar
+    env._prev = a
+    env._compute_reward(a)
+    env.drain_reward_terms()
+    env._compute_reward(b)
+    assert "damage" not in env.drain_reward_terms(), "a new enemy's full bar was billed as healing"
+    env._compute_reward(dict(b, battle=_battle_state(s, True, 0.4)["battle"]))   # same foe takes damage
+    paid = env.drain_reward_terms().get("damage", 0.0)
+    assert abs(paid - 0.6 * EmeraldEnv.DAMAGE_REWARD) < 1e-6, f"damage on the same enemy paid {paid}"
+    env.close()
+    print("test_damage_pays_nothing_when_the_enemy_changes PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1510,8 +1745,9 @@ if __name__ == "__main__":
     test_text_speed_is_pinned_to_fast()
     test_pinning_text_speed_leaves_other_options_alone()
     test_pinned_text_speed_is_not_billed_as_a_change()
-    test_pacing_one_block_is_penalised()
-    test_leaving_the_block_resets_the_loiter_counter()
+    test_pacing_a_few_tiles_is_penalised()
+    test_pacing_across_a_block_boundary_is_penalised()
+    test_walking_somewhere_is_not_loitering()
     test_standing_still_is_never_billed_as_loitering()
     test_catching_outweighs_seeing()
     test_a_level_beats_a_handful_of_tiles()
@@ -1534,4 +1770,15 @@ if __name__ == "__main__":
     test_counters_clear_on_income_not_net_reward()
     test_long_garbage_window_nets_zero()
     test_our_attack_pays_once_per_message()
+    test_pressing_into_a_wall_is_charged()
+    test_bump_exempts_battles_menus_and_moves()
+    test_wild_encounter_pays_once_per_message()
+    test_first_ever_section_pays_extra_and_survives_refresh()
+    test_damage_pays_on_enemy_hp_falling_and_charges_on_healing()
+    test_damage_pays_nothing_across_battle_start_and_end()
+    test_damage_pays_nothing_when_the_enemy_changes()
+    test_frontier_pays_toward_unvisited_and_charges_away_and_loops_net_zero()
+    test_frontier_pays_nothing_on_a_map_change()
+    test_observation_has_tiles_and_battle()
+    test_tiles_reuse_previous_window_during_map_transition()
     print("\nall env tests passed")
