@@ -102,7 +102,10 @@ _OUR_ATTACK = re.compile(r"^(?!wild\b)(?!foe\b)\S+ used \S", re.IGNORECASE)
 # A wild battle starting. Encounters happen only in tall grass, water and
 # caves, so this is "the agent is roaming where wild Pokemon are" without
 # resolving the metatile under the player.
-_WILD_APPEARED = re.compile(r"^wild \S+ appeared", re.IGNORECASE)
+# Not anchored: the printer hands the line over with a stale fragment in front
+# (": 0     Wild WINGULL appeared!" on the battle fixture), and the anchored
+# version never matched a real battle start.
+_WILD_APPEARED = re.compile(r"\bwild \S+ appeared", re.IGNORECASE)
 
 
 def wild_encounter(text: str) -> bool:

@@ -65,6 +65,10 @@ def test_flee_and_attack_detectors():
     assert not our_attack("Foe POOCHYENA used TACKLE!")
     assert not our_attack("What will TORCHIC do?")
     assert wild_encounter("Wild ZIGZAGOON appeared!")
+    # As the printer actually delivers it: a stale fragment precedes the line.
+    # An anchored pattern missed this on every battle, so the encounter reward
+    # never paid and Stage 0 counted 0 encounters for all three agents.
+    assert wild_encounter(": 0     Wild WINGULL appeared!")
     assert not wild_encounter("ZIGZAGOON appeared!") and not wild_encounter("Wild ZIGZAGOON fled!")
     print("test_flee_and_attack_detectors PASSED")
 
