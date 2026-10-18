@@ -10,7 +10,15 @@ import tempfile
 import time
 from pathlib import Path
 
-from env import EmeraldEnv   # creates no core yet; EmeraldEnv() below does, before torch
+# A frame must RUN on some core before torch is imported, or every core made
+# afterwards spins forever in run_frame(). Creating an EmeraldEnv is not
+# enough; the first version of this tool did that and hung for 45 minutes.
+from pygba import PyGBA as _PyGBA
+
+_WARMUP = _PyGBA.load("Pokemon - Emerald Version (USA, Europe).gba")
+_WARMUP.core.run_frame()
+
+from env import EmeraldEnv  # noqa: E402
 
 STEPS = int(sys.argv[1]) if len(sys.argv) > 1 else 20_000
 
@@ -48,7 +56,7 @@ def play(env, policy, steps):
 def main() -> None:
     import numpy as np
 
-    env = EmeraldEnv()                            # the core, before torch
+    env = EmeraldEnv()
     from teacher import run_teacher
     from stable_baselines3 import PPO
 

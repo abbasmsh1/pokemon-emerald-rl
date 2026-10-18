@@ -263,10 +263,26 @@ def run_teacher(steps: int, demo_dir="demos", shard_steps: int | None = None, ke
             "maps": len(maps), "decisions_per_s": steps / elapsed, "terms": terms_total}
 
 
+def _warm_up_libmgba() -> None:
+    """Run one frame on a throwaway core before torch loads.
+
+    Creating a core is not enough: a core created after torch is imported
+    spins forever in run_frame() unless some core in this process has ALREADY
+    RUN A FRAME before the import. EmeraldEnv() alone does not run one
+    (reset() does), and the first version of this entry point hung on exactly
+    that, as did tools/measure_teacher.py. test_teacher.py runs the real
+    entry point as a subprocess to keep it that way.
+    """
+    from pygba import PyGBA
+    warm = PyGBA.load("Pokemon - Emerald Version (USA, Europe).gba")
+    warm.core.run_frame()
+
+
 def main() -> None:
     import argparse
     import sys
 
+    _warm_up_libmgba()
     from env import EmeraldEnv
 
     parser = argparse.ArgumentParser(description="Let the SLM play and record demonstrations.")
@@ -275,7 +291,7 @@ def main() -> None:
     parser.add_argument("--demo-dir", default="demos")
     args = parser.parse_args()
 
-    env = EmeraldEnv()                        # mGBA core first, torch second
+    env = EmeraldEnv()
     try:
         model_tok = load_model()
     except RuntimeError as e:

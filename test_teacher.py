@@ -170,6 +170,20 @@ def test_run_teacher_writes_shards_and_prunes():
     print("test_run_teacher_writes_shards_and_prunes PASSED")
 
 
+def test_entry_point_runs_as_a_subprocess_without_hanging():
+    """The real `teacher.py` process: a core must run a frame before torch is
+    imported or the first env.reset() spins forever. Caught once at 45 minutes
+    of 100% CPU; this keeps it caught in two."""
+    import subprocess, sys, tempfile
+    with tempfile.TemporaryDirectory() as d:
+        r = subprocess.run([sys.executable, "teacher.py", "--steps", "3", "--demo-dir", d],
+                           capture_output=True, text=True, timeout=180,
+                           env={**__import__("os").environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    assert r.returncode == 0, r.stderr[-400:]
+    assert "teacher done" in r.stdout, r.stdout[-300:]
+    print("test_entry_point_runs_as_a_subprocess_without_hanging PASSED")
+
+
 if __name__ == "__main__":
     test_move_names()
     test_tile_summary_names_adjacent_and_nearest()
@@ -181,4 +195,5 @@ if __name__ == "__main__":
     test_battle_fixture_prefers_a_fight_button_over_start()
     test_decision_is_fast_on_gpu()
     test_run_teacher_writes_shards_and_prunes()
+    test_entry_point_runs_as_a_subprocess_without_hanging()
     print("\nall teacher tests passed")

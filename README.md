@@ -322,7 +322,7 @@ Measured at ~300-330 env steps/sec across 8 workers on an 8-core laptop.
 
 Recorded because none were obvious and each burned hours:
 
-**`import torch` breaks libmgba.** Any emulator core created after torch is imported hangs forever inside `run_frame()`, spinning at 100% CPU. Not SB3, not OpenMP, not `LD_PRELOAD` ordering — torch alone. Both entry points create a throwaway core *before* importing torch, and `SubprocVecEnv` passes `start_method="fork"` because the `forkserver` default forks from a clean process that never saw that warmup.
+**`import torch` breaks libmgba.** Any emulator core created after torch is imported hangs forever inside `run_frame()`, spinning at 100% CPU. Not SB3, not OpenMP, not `LD_PRELOAD` ordering — torch alone. The inoculation is a core that has *run a frame* before the import; merely constructing one (an `EmeraldEnv()` without `reset()`) is not enough, which cost 45 minutes on the teacher's measurement tool. Every entry point creates a throwaway core and runs one frame *before* importing torch, and `SubprocVecEnv` passes `start_method="fork"` because the `forkserver` default forks from a clean process that never saw that warmup.
 
 **Save blocks relocate during map transitions** and parse as garbage for a step or two: bogus map ids, and the event-flag array read at a shifted offset. Before this was caught, walking through a doorway paid up to **+177** against a +100 badge. Reward, termination and coverage all now gate on the map id being stable.
 
