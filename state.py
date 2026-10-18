@@ -8,10 +8,13 @@ per step against a 7.36ms step budget.
 
 import struct
 
+import numpy as np
+
 from pygba import PyGBA
 
 from text import TextReader
 from tilemap import TileMapReader
+from battle import BATTLE_SIZE, BattleReader
 from pygba.game_wrappers.utils.emerald_utils import (
     ADRESSES,
     SaveBlock2_spec,
@@ -78,6 +81,7 @@ class GameState:
         self.gba = gba
         self.text = TextReader(gba)
         self.tiles = TileMapReader(gba)
+        self.battle = BattleReader(gba)
         self._last_good = None
 
     def reset(self) -> None:
@@ -107,6 +111,8 @@ class GameState:
                 "trainer_flag_count": 0,
                 "whiteout": False,
                 "options": (0, 0),
+                "battle": np.zeros(BATTLE_SIZE, dtype=np.float32),
+                "in_battle": False,
             }
 
         flags = sb1["flags"]
@@ -165,6 +171,8 @@ class GameState:
             "screen_text": self.text.read(),
             "party_hp_frac": hp_frac,
             "options": options,
+            "battle": self.battle.read(),
+            "in_battle": self.battle.in_battle(),
             "money": money,
             "seen": seen,
             "caught": caught,

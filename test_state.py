@@ -15,7 +15,7 @@ def test_read_returns_expected_keys_and_types():
         "badges", "map", "pos", "party_levels", "party_hp_frac",
         "money", "seen", "caught", "script_flag_count",
         "trainer_flag_count", "whiteout", "party_exp", "screen_text",
-        "options",
+        "options", "battle", "in_battle",
     }
     assert set(s) == expected, f"key mismatch: {set(s) ^ expected}"
 
