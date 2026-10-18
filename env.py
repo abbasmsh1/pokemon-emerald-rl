@@ -675,9 +675,12 @@ class EmeraldEnv(gym.Env):
                 reward += self._pay("encounter", self.ENCOUNTER_REWARD)
 
             # Damage dealt; see DAMAGE_REWARD. Only when both steps are in a
-            # battle, so the start (zeros -> full bar) and the end (bar ->
-            # zeros) book nothing.
-            if s["in_battle"] and prev["in_battle"]:
+            # battle AND on the same foe. The battle array is stale, and the
+            # in-battle flag rises a frame before the new foe is loaded, so a
+            # battle's first in-battle step shows the previous foe; without the
+            # identity check "stale 0 hp -> new foe's full bar" was charged
+            # -0.5 at nearly every battle start, cancelling the KO just paid.
+            if s["in_battle"] and prev["in_battle"] and s["enemy_id"] == prev["enemy_id"]:
                 delta = float(prev["battle"][1]) - float(s["battle"][1])
                 if delta:
                     reward += self._pay("damage", self.DAMAGE_REWARD * delta)

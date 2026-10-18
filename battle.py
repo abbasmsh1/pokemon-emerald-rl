@@ -42,7 +42,10 @@ class BattleReader:
             moves = list(struct.unpack_from("<4H", e, 0x0C))
             pp = list(e[0x24:0x28])
             hp, maxhp = struct.unpack_from("<H", e, 0x28)[0], struct.unpack_from("<H", e, 0x2C)[0]
-            out.append(dict(moves=moves, pp=pp, hp=hp, maxhp=maxhp, level=e[0x2A]))
+            species = struct.unpack_from("<H", e, 0x00)[0]
+            personality = struct.unpack_from("<I", e, 0x48)[0]
+            out.append(dict(moves=moves, pp=pp, hp=hp, maxhp=maxhp, level=e[0x2A],
+                            species=species, personality=personality))
         return out[0], out[1]
 
     def _move(self, move_id: int) -> tuple[int, int]:
@@ -55,6 +58,18 @@ class BattleReader:
             rec = bytes(self.gba.core.memory.u8[a:a + MOVE_ENTRY])
             self._move_cache[move_id] = (rec[MOVE_POWER_OFFSET], rec[MOVE_PP_OFFSET])
         return self._move_cache[move_id]
+
+    def enemy_identity(self) -> tuple[int, int]:
+        """(species, personality) of the current enemy, (0, 0) outside a battle.
+
+        The array is stale between battles and a battle's first in-battle step
+        still shows the previous foe, so the damage term needs to know when
+        the foe changed: a new wild Pokemon or a trainer's switch-in always
+        has a different personality."""
+        if not self.in_battle():
+            return 0, 0
+        enemy = self._entries()[1]
+        return enemy["species"], enemy["personality"]
 
     def our_move_ids(self) -> list[int]:
         return self._entries()[0]["moves"]

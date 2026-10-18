@@ -1568,7 +1568,7 @@ def _battle_state(s, in_battle: bool, enemy_hp: float) -> dict:
     v = np.zeros(12, dtype=np.float32)
     if in_battle:
         v[0], v[1], v[2] = 1.0, enemy_hp, 0.8
-    return dict(s, in_battle=in_battle, battle=v)
+    return dict(s, in_battle=in_battle, battle=v, enemy_id=(309, 777) if in_battle else (0, 0))
 
 
 def test_damage_pays_on_enemy_hp_falling_and_charges_on_healing():
@@ -1680,6 +1680,29 @@ def test_tiles_reuse_previous_window_during_map_transition():
     print("test_tiles_reuse_previous_window_during_map_transition PASSED")
 
 
+def test_damage_pays_nothing_when_the_enemy_changes():
+    """Review finding: gBattleMons is stale, and a battle's first in-battle
+    step still shows the previous enemy, so stale hp -> new enemy's 1.0 was
+    booked as a charge at almost every battle start (and at every trainer
+    switch-in), cancelling the KO just paid. Damage only counts on the same
+    enemy, identified by species and personality."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    a = dict(_battle_state(s, True, 0.0), enemy_id=(309, 12345))     # stale: last foe at 0 hp
+    b = dict(_battle_state(s, True, 1.0), enemy_id=(286, 99999))     # the new foe, full bar
+    env._prev = a
+    env._compute_reward(a)
+    env.drain_reward_terms()
+    env._compute_reward(b)
+    assert "damage" not in env.drain_reward_terms(), "a new enemy's full bar was billed as healing"
+    env._compute_reward(dict(b, battle=_battle_state(s, True, 0.4)["battle"]))   # same foe takes damage
+    paid = env.drain_reward_terms().get("damage", 0.0)
+    assert abs(paid - 0.6 * EmeraldEnv.DAMAGE_REWARD) < 1e-6, f"damage on the same enemy paid {paid}"
+    env.close()
+    print("test_damage_pays_nothing_when_the_enemy_changes PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1753,6 +1776,7 @@ if __name__ == "__main__":
     test_first_ever_section_pays_extra_and_survives_refresh()
     test_damage_pays_on_enemy_hp_falling_and_charges_on_healing()
     test_damage_pays_nothing_across_battle_start_and_end()
+    test_damage_pays_nothing_when_the_enemy_changes()
     test_frontier_pays_toward_unvisited_and_charges_away_and_loops_net_zero()
     test_frontier_pays_nothing_on_a_map_change()
     test_observation_has_tiles_and_battle()

@@ -113,6 +113,7 @@ class GameState:
                 "options": (0, 0),
                 "battle": np.zeros(BATTLE_SIZE, dtype=np.float32),
                 "in_battle": False,
+                "enemy_id": (0, 0),
             }
 
         flags = sb1["flags"]
@@ -173,6 +174,7 @@ class GameState:
             "options": options,
             "battle": self.battle.read(),
             "in_battle": self.battle.in_battle(),
+            "enemy_id": self.battle.enemy_identity(),
             "money": money,
             "seen": seen,
             "caught": caught,

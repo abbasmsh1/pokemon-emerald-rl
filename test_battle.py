@@ -55,6 +55,19 @@ def test_move_nature_marks_scratch_damaging_and_growl_status():
     print("test_move_nature_marks_scratch_damaging_and_growl_status PASSED")
 
 
+def test_enemy_identity_changes_with_the_foe_and_is_zero_outside_battle():
+    """Species and personality of the current enemy, so the damage term can
+    tell a new foe's full bar from the last foe healing. Zero outside a
+    battle, even though the array still holds the last foe."""
+    b, d = _env("battle.state"), _env("dialogue.state")
+    ident = BattleReader(b.gba).enemy_identity()
+    assert ident[0] == 309 and ident[1] != 0, f"fixture enemy identity {ident}"
+    assert BattleReader(d.gba).enemy_identity() == (0, 0), "identity reported outside a battle"
+    assert b.state_reader.read()["enemy_id"] == ident
+    b.close(); d.close()
+    print("test_enemy_identity_changes_with_the_foe_and_is_zero_outside_battle PASSED")
+
+
 def test_vector_is_zero_outside_battle():
     env = _env("dialogue.state")
     assert not BattleReader(env.gba).read().any(), "battle vector non-zero outside a battle"
@@ -111,6 +124,7 @@ if __name__ == "__main__":
     test_in_battle_on_the_fixture_and_not_in_dialogue()
     test_vector_layout_in_battle()
     test_move_nature_marks_scratch_damaging_and_growl_status()
+    test_enemy_identity_changes_with_the_foe_and_is_zero_outside_battle()
     test_vector_is_zero_outside_battle()
     test_state_read_exposes_battle()
     test_battle_read_is_cheap()

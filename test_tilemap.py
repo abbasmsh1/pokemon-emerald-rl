@@ -160,6 +160,22 @@ def test_window_before_the_game_starts_is_unknown():
     print("test_window_before_the_game_starts_is_unknown PASSED")
 
 
+def test_behaviour_sets_match_the_header():
+    """Values from pokeemerald include/constants/metatile_behaviors.h. The
+    first version matched names by substring and swept MB_INDOOR_ENCOUNTER
+    (a floor) and three closed doors into the passable warp set."""
+    from tilemap import GRASS, LEDGE, WARP, WATER
+    for closed in (0x0B, 0x8B, 0xBE, 0xEA):          # indoor-encounter floor, closed doors
+        assert closed not in WARP, f"{closed:#x} is impassable but classed warp"
+    assert 0x1C in WARP, "MB_SHOAL_CAVE_ENTRANCE missing from warp"
+    assert 0x17 not in WATER, "MB_SHALLOW_WATER is walked on foot"
+    assert 0x19 in WATER, "MB_NO_SURFACING is surfable deep water"
+    assert 0x07 not in GRASS, "MB_SHORT_GRASS has no encounters"
+    assert 0x08 in GRASS, "MB_CAVE floors have encounters"
+    assert LEDGE == set(range(0x38, 0x40))
+    print("test_behaviour_sets_match_the_header PASSED")
+
+
 def test_npc_tiles_are_marked():
     """dialogue.state has Prof. Birch standing next to the player."""
     env = _dialogue_env()
@@ -197,6 +213,7 @@ if __name__ == "__main__":
     test_edge_of_map_reads_outside()
     test_unresolvable_tileset_reads_unknown()
     test_window_before_the_game_starts_is_unknown()
+    test_behaviour_sets_match_the_header()
     test_npc_tiles_are_marked()
     test_window_read_is_cheap()
     print("\nall tilemap tests passed")
