@@ -14,6 +14,18 @@ features from natural images may well carry less signal here than a small CNN
 trained from scratch on this exact input, which is why Atari-style RL uses
 NatureCNN. This exists as an option so the two can be compared on the same
 reward rather than argued about.
+
+The pretrained weights must actually be pretrained, which is not something to
+take on trust. A checkpoint lineage ran for 82 million steps carrying RANDOM
+conv weights underneath ImageNet BatchNorm parameters: all 20 conv tensors
+differed from torchvision's by up to 1.03 while every BatchNorm weight, bias
+and running statistic matched exactly. BatchNorm calibrated for ImageNet conv
+outputs, applied to random ones, drove the pooled features to a magnitude of
+72 and a pairwise cosine similarity of 0.9991 across completely different
+screens. Raw pixels over those same screens averaged -0.045, so they were
+genuinely different pictures; the policy on top was blind. A freshly built
+extractor measures 0.85 and 0.713 on the same frames. test_backbone.py checks
+the conv weights against torchvision directly.
 """
 
 import gymnasium as gym
