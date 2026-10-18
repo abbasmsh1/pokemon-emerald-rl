@@ -165,3 +165,126 @@ def choose_action(model, tok, prompt: str, temperature: float = 0.0, rng=None):
     probs = np.exp(z - z.max()); probs /= probs.sum()
     rng = rng or np.random.default_rng()
     return int(rng.choice(len(scores), p=probs)), scores
+
+
+# ---------------------------------------------------------------------------
+# The play loop.
+
+def frontier_direction(section: tuple[int, int], visited: set, cap: int = 8) -> str:
+    """Compass direction of the nearest section not in `visited`, "" if none
+    within `cap` rings. Same ring scan as frontier.nearest_unvisited_distance,
+    but it returns where rather than how far."""
+    sx, sy = section
+    for d in range(1, cap + 1):
+        for dx in range(-d, d + 1):
+            dy = d - abs(dx)
+            for yy in ({sy + dy, sy - dy}):
+                if (sx + dx, yy) not in visited:
+                    return _direction(dx, yy - sy)
+    return ""
+
+
+def run_teacher(steps: int, demo_dir="demos", shard_steps: int | None = None, keep: int | None = None,
+                temperature: float = 0.0, log_every: int = 1000, env=None, model_tok=None) -> dict:
+    """Play `steps` steps, write a shard every `shard_steps`, prune the ring,
+    log a reward ledger every `log_every` steps; returns the counts."""
+    import time
+    from pathlib import Path
+
+    from demos import FIELDS, KEEP_SHARDS, SHARD_STEPS, prune_ring, write_shard
+    from env import EmeraldEnv
+
+    shard_steps = shard_steps or SHARD_STEPS
+    keep = keep or KEEP_SHARDS
+    demo_dir = Path(demo_dir)
+    env = env or EmeraldEnv()                 # the core exists before torch loads
+    model, tok = model_tok or load_model()
+    rng = np.random.default_rng()
+
+    obs, info = env.reset()
+    env.drain_reward_terms()
+    s = env.state_reader.read()
+    recent: list[str] = []
+    moved = False
+    episode_start = True
+    buf = {k: [] for k in FIELDS}
+    shards = 0
+    total = 0.0
+    tiles: set = set()
+    maps: set = set()
+    terms_total: dict[str, float] = {}
+    t0 = time.perf_counter()
+
+    for i in range(1, steps + 1):
+        g, n = s["map"]
+        section = (s["pos"][0] // 8, s["pos"][1] // 8)
+        visited = {(sx, sy) for (gg, nn, sx, sy) in env._sections_ever if (gg, nn) == (g, n)}
+        frontier = frontier_direction(section, visited)
+        prompt = build_prompt(s, obs, recent, moved, frontier)
+        action, _ = choose_action(model, tok, prompt, temperature, rng)
+
+        for k in ("screen", "state", "text", "tiles", "battle"):
+            buf[k].append(np.asarray(obs[k]))
+        obs, reward, terminated, truncated, info = env.step(action)
+        buf["action"].append(action)
+        buf["reward"].append(np.float32(reward))
+        buf["episode_start"].append(episode_start)
+        episode_start = False
+
+        total += reward
+        s = env.state_reader.read()
+        moved = env._moved
+        recent = (recent + [ACTION_WORDS[action]])[-3:]
+        tiles.add((s["map"], s["pos"]))
+        maps.add(s["map"])
+
+        if len(buf["action"]) >= shard_steps:
+            write_shard(demo_dir, {k: np.asarray(v) for k, v in buf.items()})
+            prune_ring(demo_dir, keep)
+            shards += 1
+            buf = {k: [] for k in FIELDS}
+        if i % log_every == 0:
+            terms = env.drain_reward_terms()
+            for k, v in terms.items():
+                terms_total[k] = terms_total.get(k, 0.0) + v
+            rate = i / (time.perf_counter() - t0)
+            shown = "  ".join(f"{k} {v / log_every * 1000:+.2f}" for k, v in sorted(terms.items(), key=lambda kv: -abs(kv[1])) if v)
+            print(f"teacher {i:>8} steps  {rate:5.1f}/s  per 1k: {shown}", flush=True)
+        if terminated or truncated:
+            obs, info = env.reset()
+            s = env.state_reader.read()
+            episode_start = True
+            recent, moved = [], False
+
+    for k, v in env.drain_reward_terms().items():
+        terms_total[k] = terms_total.get(k, 0.0) + v
+    elapsed = time.perf_counter() - t0
+    return {"steps": steps, "shards": shards, "reward": total, "distinct_tiles": len(tiles),
+            "maps": len(maps), "decisions_per_s": steps / elapsed, "terms": terms_total}
+
+
+def main() -> None:
+    import argparse
+    import sys
+
+    from env import EmeraldEnv
+
+    parser = argparse.ArgumentParser(description="Let the SLM play and record demonstrations.")
+    parser.add_argument("--steps", type=int, default=10**9)
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--demo-dir", default="demos")
+    args = parser.parse_args()
+
+    env = EmeraldEnv()                        # mGBA core first, torch second
+    try:
+        model_tok = load_model()
+    except RuntimeError as e:
+        print(e, file=sys.stderr, flush=True)
+        sys.exit(2)
+    print(f"teacher: {MODEL_NAME} on {next(model_tok[0].parameters()).device}, temperature {args.temperature}", flush=True)
+    out = run_teacher(args.steps, demo_dir=args.demo_dir, temperature=args.temperature, env=env, model_tok=model_tok)
+    print("teacher done:", {k: v for k, v in out.items() if k != "terms"}, flush=True)
+
+
+if __name__ == "__main__":
+    main()

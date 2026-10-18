@@ -1,0 +1,21 @@
+[Unit]
+Description=Pokemon Emerald SLM teacher (plays and records demonstrations)
+After=graphical-session.target
+
+[Service]
+Type=exec
+# Same symlink as the training unit: the real path contains a space.
+WorkingDirectory=/home/abbas/pokemon-rl
+ExecStart=/home/abbas/pokemon-rl/run_teacher.sh
+# on-failure, not always: a clean exit (--steps reached) must stay down, and a
+# model that cannot load exits 2 and is retried after a minute.
+Restart=on-failure
+RestartSec=60
+KillMode=control-group
+TimeoutStopSec=30
+Nice=10
+StandardOutput=append:/home/abbas/pokemon-rl/teacher.log
+StandardError=append:/home/abbas/pokemon-rl/teacher.log
+
+[Install]
+WantedBy=default.target
