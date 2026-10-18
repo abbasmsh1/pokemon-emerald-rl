@@ -176,12 +176,25 @@ def test_entry_point_runs_as_a_subprocess_without_hanging():
     of 100% CPU; this keeps it caught in two."""
     import subprocess, sys, tempfile
     with tempfile.TemporaryDirectory() as d:
+        # On the CPU: the suite already holds one model on the GPU, and two
+        # copies beside the trainer do not fit in 4 GB (seen: CUDA OOM here).
         r = subprocess.run([sys.executable, "teacher.py", "--steps", "3", "--demo-dir", d],
-                           capture_output=True, text=True, timeout=180,
-                           env={**__import__("os").environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                           capture_output=True, text=True, timeout=300,
+                           env={**__import__("os").environ, "PYTHONDONTWRITEBYTECODE": "1", "CUDA_VISIBLE_DEVICES": ""})
     assert r.returncode == 0, r.stderr[-400:]
     assert "teacher done" in r.stdout, r.stdout[-300:]
     print("test_entry_point_runs_as_a_subprocess_without_hanging PASSED")
+
+
+def test_prompt_directs_toward_grass_and_fighting():
+    env, s, obs = _fixture("battle.state")                      # the player stands in grass here
+    p = build_prompt(dict(s, in_battle=False, screen_text=""), obs, [], False)
+    assert "you are in grass" in p and "never run" in p, p
+    tiles = np.zeros((9, 11, 15), np.uint8); tiles[CLASSES.index("walkable")] = 1
+    p2 = build_prompt(dict(s, in_battle=False, screen_text=""), dict(obs, tiles=tiles), [], False, "west", stalled=True)
+    assert "advice: go west to explore" in p2 and "you are stuck" in p2, p2
+    env.close()
+    print("test_prompt_directs_toward_grass_and_fighting PASSED")
 
 
 def test_possible_moves_and_can_move_line():
@@ -222,6 +235,7 @@ if __name__ == "__main__":
     test_prompt_is_deterministic_and_bounded_on_fixtures()
     test_battle_prompt_marks_move_natures()
     test_prompt_survives_hostile_text()
+    test_prompt_directs_toward_grass_and_fighting()
     test_possible_moves_and_can_move_line()
     test_action_token_ids_are_distinct_and_eight()
     test_mask_never_presses_into_a_wall_in_the_overworld()

@@ -22,7 +22,7 @@ ACTION_WORDS = ("none", "up", "down", "left", "right", "A", "B", "start")   # in
 # 256, not the spec's "~200": the dialogue fixture measures 224 with the
 # tightest wording, and the binding constraint is decisions per second, which
 # 256 tokens leaves at ~25 on the GPU.
-MAX_PROMPT_TOKENS = 256
+MAX_PROMPT_TOKENS = 288   # round-2 directives pushed the dialogue fixture to 272; measured 16-18 decisions/s
 SYSTEM = "You play Pokemon Emerald."      # replaces Qwen's 20-token default system line
 MAX_TEXT_CHARS = 64
 
@@ -34,8 +34,9 @@ MAP_NAMES = {
 # Both lines are sent every step, so they are kept terse: the prompt budget
 # is MAX_PROMPT_TOKENS and the dialogue fixture sat at 245 with longer wording.
 GOAL = ("Goal: win the Rustboro gym badge. Route: Littleroot, Route 101 N, Oldale, Route 102 W, "
-        "Petalburg, Route 104 N, Petalburg Woods, Rustboro.")
-LEGEND = "Buttons: up down left right = walk or move cursor; A = talk, confirm, attack; B = cancel, run; start = menu; none = wait."
+        "Petalburg, Route 104 N, Petalburg Woods, Rustboro. Walk through tall grass to find wild Pokemon "
+        "and fight them: in a battle press A and pick a damaging (D) move, never run.")
+LEGEND = "Buttons: up down left right = walk/cursor; A = talk, confirm, attack; B = cancel; none = wait."
 PROMPT_CLASS = {"warp": "door"}
 
 
@@ -94,8 +95,9 @@ def _clean_text(text: str) -> str:
     return " ".join(text.replace('"', "'").split())[:MAX_TEXT_CHARS]
 
 
-def build_prompt(s: dict, obs: dict, recent: list, moved: bool, frontier: str = "") -> str:
-    """The user turn. Deterministic; under MAX_PROMPT_TOKENS on the fixtures."""
+def build_prompt(s: dict, obs: dict, recent: list, moved: bool, frontier: str = "", stalled: bool = False) -> str:
+    """The user turn. Deterministic; under MAX_PROMPT_TOKENS on the fixtures.
+    `stalled` adds a nudge when the caller has seen no income for a while."""
     lines = [GOAL]
     loc = f"location: {map_name(s['map'])} at ({s['pos'][0]}, {s['pos'][1]})"
     if frontier:
@@ -109,6 +111,15 @@ def build_prompt(s: dict, obs: dict, recent: list, moved: bool, frontier: str = 
         lines.append("tiles: " + summarise_tiles(obs["tiles"]))
         moves_ok = possible_moves(obs["tiles"])
         lines.append("can move: " + (", ".join(DIRECTION_NAME[d] for d in moves_ok) if moves_ok else "nowhere"))
+        summary = lines[-2]
+        if "nearest grass" in summary:
+            where = summary.split("nearest grass: ")[1].split(";")[0]
+            lines.append(f"advice: walk {where} into the grass to find Pokemon" if where != "here"
+                         else "advice: you are in grass; keep walking here to find Pokemon")
+        elif frontier:
+            lines.append(f"advice: go {frontier} to explore")
+        if stalled:
+            lines.append("advice: you are stuck; pick a different direction toward unexplored ground")
     if s.get("in_battle"):
         b = s["battle"]
         lines.append(f"battle: enemy HP {int(round(b[1] * 100))}%, our HP {int(round(b[2] * 100))}%")
@@ -259,13 +270,14 @@ def run_teacher(steps: int, demo_dir="demos", shard_steps: int | None = None, ke
     maps: set = set()
     terms_total: dict[str, float] = {}
     t0 = time.perf_counter()
+    since_income = 0
 
     for i in range(1, steps + 1):
         g, n = s["map"]
         section = (s["pos"][0] // 8, s["pos"][1] // 8)
         visited = {(sx, sy) for (gg, nn, sx, sy) in env._sections_ever if (gg, nn) == (g, n)}
         frontier = frontier_direction(section, visited)
-        prompt = build_prompt(s, obs, recent, moved, frontier)
+        prompt = build_prompt(s, obs, recent, moved, frontier, stalled=since_income > 200)
         action, _ = choose_action(model, tok, prompt, temperature, rng, overworld_mask(s, obs))
 
         for k in ("screen", "state", "text", "tiles", "battle"):
@@ -277,6 +289,7 @@ def run_teacher(steps: int, demo_dir="demos", shard_steps: int | None = None, ke
         episode_start = False
 
         total += reward
+        since_income = 0 if reward > 0 else since_income + 1
         s = env.state_reader.read()
         moved = env._moved
         recent = (recent + [ACTION_WORDS[action]])[-3:]
