@@ -11,6 +11,7 @@ import struct
 from pygba import PyGBA
 
 from text import TextReader
+from tilemap import TileMapReader
 from pygba.game_wrappers.utils.emerald_utils import (
     ADRESSES,
     SaveBlock2_spec,
@@ -76,6 +77,7 @@ class GameState:
     def __init__(self, gba: PyGBA):
         self.gba = gba
         self.text = TextReader(gba)
+        self.tiles = TileMapReader(gba)
         self._last_good = None
 
     def reset(self) -> None:
