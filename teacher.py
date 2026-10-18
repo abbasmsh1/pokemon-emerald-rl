@@ -109,3 +109,59 @@ def build_prompt(s: dict, obs: dict, recent: list, moved: bool, frontier: str = 
 def format_chat(tok, prompt: str) -> str:
     msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
     return tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
+
+
+# ---------------------------------------------------------------------------
+# Decision: one forward pass, the eight buttons scored at the next token.
+# torch and transformers are imported lazily: any entry point must create an
+# mGBA core before they load, and keeping them out of the module import makes
+# that the caller's one job rather than this file's.
+
+
+def load_model(device: str | None = None):
+    """Qwen2.5-0.5B-Instruct from the local cache, fp16 on cuda if available.
+    Raises RuntimeError with a clear message on any failure, so the service
+    exits non-zero and systemd restarts it with backoff."""
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        dtype = torch.float16 if device == "cuda" else torch.float32
+        tok = AutoTokenizer.from_pretrained(MODEL_NAME, local_files_only=True)
+        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, dtype=dtype, local_files_only=True).to(device).eval()
+        return model, tok
+    except Exception as e:  # noqa: BLE001 - every failure here means "no teacher"
+        raise RuntimeError(f"teacher model unavailable: {type(e).__name__}: {e}") from e
+
+
+# The assistant turn is prefilled with this, so the next token must be the
+# button. Without it a 0.5B model wants to open with "The" or "Button" and the
+# restricted scores collapse to the same word on every screen (measured: "down"
+# on all three fixtures). After a colon the button arrives as a space-prefixed
+# token, so those are the ids scored.
+PREFILL = "Button:"
+
+
+def action_token_ids(tok) -> list[int]:
+    ids = [tok.encode(" " + word, add_special_tokens=False)[0] for word in ACTION_WORDS]
+    assert len(set(ids)) == len(ACTION_WORDS), f"action words share a first token: {ids}"
+    return ids
+
+
+def choose_action(model, tok, prompt: str, temperature: float = 0.0, rng=None):
+    """(action index, scores[8]) from the next-token logits at the action words."""
+    import torch
+
+    ids = getattr(tok, "_action_ids", None)
+    if ids is None:
+        ids = tok._action_ids = action_token_ids(tok)
+    enc = tok(format_chat(tok, prompt) + PREFILL, return_tensors="pt").to(next(model.parameters()).device)
+    with torch.no_grad():
+        logits = model(**enc).logits[0, -1]
+    scores = logits[ids].float().cpu().numpy()
+    if temperature <= 0:
+        return int(scores.argmax()), scores
+    z = scores / temperature
+    probs = np.exp(z - z.max()); probs /= probs.sum()
+    rng = rng or np.random.default_rng()
+    return int(rng.choice(len(scores), p=probs)), scores

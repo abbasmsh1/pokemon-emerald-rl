@@ -9,7 +9,8 @@ import numpy as np  # noqa: E402
 
 from battle import move_name  # noqa: E402
 from env import EmeraldEnv  # noqa: E402
-from teacher import MAX_PROMPT_TOKENS, build_prompt, format_chat, map_name, summarise_tiles  # noqa: E402
+from teacher import (ACTION_WORDS, MAX_PROMPT_TOKENS, action_token_ids, build_prompt, choose_action,  # noqa: E402
+                     format_chat, load_model, map_name, summarise_tiles)
 from tilemap import CLASSES  # noqa: E402
 
 
@@ -81,10 +82,76 @@ def test_prompt_survives_hostile_text():
     print("test_prompt_survives_hostile_text PASSED")
 
 
+_MODEL = None
+
+
+def _model():
+    global _MODEL
+    if _MODEL is None:
+        _MODEL = load_model()
+    return _MODEL
+
+
+def test_action_token_ids_are_distinct_and_eight():
+    ids = action_token_ids(_tok())
+    assert len(ids) == 8 and len(set(ids)) == 8, ids
+    print("test_action_token_ids_are_distinct_and_eight PASSED")
+
+
+def test_choose_action_is_valid_on_every_fixture():
+    model, tok = _model()
+    for state in (None, "dialogue.state", "battle.state"):
+        env, s, obs = _fixture(state)
+        for text in (s["screen_text"], '{"}' + "A" * 160 + "\n\n"):
+            a, scores = choose_action(model, tok, build_prompt(dict(s, screen_text=text), obs, ["up"], True))
+            assert 0 <= a < 8 and scores.shape == (8,) and np.isfinite(scores).all(), (state, a, scores)
+        env.close()
+    a1, _ = choose_action(model, tok, "text: none\nAnswer with one button only.", temperature=0.7, rng=np.random.default_rng(0))
+    assert 0 <= a1 < 8
+    print("test_choose_action_is_valid_on_every_fixture PASSED")
+
+
+def test_battle_fixture_prefers_a_fight_button_over_start():
+    model, tok = _model()
+    env, s, obs = _fixture("battle.state")
+    a, scores = choose_action(model, tok, build_prompt(s, obs, [], False))
+    # At "Wild X appeared!" both A and B advance the text in Gen 3; a direction
+    # or start would be the wrong kind of answer.
+    assert ACTION_WORDS[a] in ("A", "B"), f"chose {ACTION_WORDS[a]} at the battle intro: {scores}"
+    env.close()
+    env, s, obs = _fixture("dialogue.state")
+    a2, _ = choose_action(model, tok, build_prompt(s, obs, [], False))
+    assert ACTION_WORDS[a2] in ("A", "B"), f"chose {ACTION_WORDS[a2]} with a dialogue box open"
+    env.close()
+    print(f"test_battle_fixture_prefers_a_fight_button_over_start PASSED (battle {ACTION_WORDS[a]}, dialogue {ACTION_WORDS[a2]})")
+
+
+def test_decision_is_fast_on_gpu():
+    import time
+    import torch
+    model, tok = _model()
+    if not next(model.parameters()).is_cuda:
+        print("test_decision_is_fast_on_gpu SKIPPED (cpu)"); return
+    env, s, obs = _fixture("dialogue.state")
+    p = build_prompt(s, obs, ["up", "A", "none"], True, "north")
+    choose_action(model, tok, p)
+    t0 = time.perf_counter()
+    for _ in range(20):
+        choose_action(model, tok, p)
+    ms = (time.perf_counter() - t0) / 20 * 1000
+    assert ms < 40, f"{ms:.0f} ms per decision"
+    env.close()
+    print(f"test_decision_is_fast_on_gpu PASSED ({ms:.0f} ms)")
+
+
 if __name__ == "__main__":
     test_move_names()
     test_tile_summary_names_adjacent_and_nearest()
     test_prompt_is_deterministic_and_bounded_on_fixtures()
     test_battle_prompt_marks_move_natures()
     test_prompt_survives_hostile_text()
+    test_action_token_ids_are_distinct_and_eight()
+    test_choose_action_is_valid_on_every_fixture()
+    test_battle_fixture_prefers_a_fight_button_over_start()
+    test_decision_is_fast_on_gpu()
     print("\nall teacher tests passed")
