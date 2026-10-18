@@ -37,7 +37,19 @@ It reaches Birch's lab and obtains Mudkip, which requires completing the bag sce
 29-value vector. The first 17 are decoded from RAM: badge bits, party HP
 fraction, mean party level, map id, player x/y, money, Pokedex seen and caught.
 
-The other 12 describe the agent's own situation: a one-hot of the last action,
+Two more keys are exact reads of what a vision model would otherwise have to
+guess. `tiles` is an 11x15 window of tile classes around the player (walkable,
+blocked, tall grass, water, ledge, door or warp, NPC, outside the map, unknown)
+resolved from the map grid in RAM and the tilesets' attribute tables in ROM,
+with NPCs overlaid from the object-event array; every address was found by
+`tools/probe_tilemap.py` and is pinned by a fixture test, and a 300-press
+self-consistency test checks that blocked presses face impassable tiles and
+moves land on passable ones. `battle` is 12 values: in-battle, enemy and own
+HP fractions, PP of our four moves, the level ratio, and for each move whether
+it does damage, from the battle Pokemon array and the ROM move table. Both
+cost under 0.4 ms per step together.
+
+The other 12 state values describe the agent's own situation: a one-hot of the last action,
 whether that action moved it, and how far along each of the three penalty
 counters it is. They exist because the penalties were being charged on state
 the agent could not perceive. `_frozen_steps`, `_block_steps` and
@@ -275,7 +287,10 @@ starts farming itself shows up as a curve climbing away from the others.
 | `env.py` | Gymnasium environment, observations, reward |
 | `train.py` | PPO across 8 subprocess workers |
 | `backbone.py` | Optional pretrained ResNet18 feature extractor |
-| `extractor.py` | Current extractor: NatureCNN + text encoder + inverse-dynamics head |
+| `extractor.py` | Current extractor: NatureCNN + text encoder + tile CNN + inverse-dynamics and forward heads |
+| `tilemap.py` | Tile-class window from the map grid; addresses from `tools/probe_tilemap.py` |
+| `battle.py` | Battle state from the battle Pokemon array and the move table |
+| `frontier.py` | Distance to the nearest never-visited section |
 | `text.py` | Follows the game's text printer to the exact on-screen string, no OCR |
 | `coverage.py` | Renders the exploration overlay |
 | `stats.py` | Decodes a savestate into readable progress |

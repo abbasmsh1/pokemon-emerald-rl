@@ -1647,6 +1647,39 @@ def test_frontier_pays_nothing_on_a_map_change():
     print("test_frontier_pays_nothing_on_a_map_change PASSED")
 
 
+def test_observation_has_tiles_and_battle():
+    env = EmeraldEnv()
+    obs, _ = env.reset()
+    assert env.observation_space.contains(obs), "observation outside the declared space"
+    assert obs["tiles"].shape == (9, 11, 15) and obs["tiles"].dtype == np.uint8
+    assert obs["battle"].shape == (12,) and obs["battle"].dtype == np.float32
+    obs, *_ = env.step(0)
+    assert env.observation_space.contains(obs)
+    env.close()
+    print("test_observation_has_tiles_and_battle PASSED")
+
+
+def test_tiles_reuse_previous_window_during_map_transition():
+    """A mid-relocation read must not reach the policy as a window of garbage;
+    the previous stable window is reused until the map id settles."""
+    env = EmeraldEnv()
+    obs, _ = env.reset()
+    stable_tiles = obs["tiles"].copy()
+    real_read, real_window = env.state_reader.read, env.state_reader.tiles.window
+    s = real_read()
+    bogus = dict(s, map=(s["map"][0], s["map"][1] + 1), pos=(2560, 255))
+    garbage = np.zeros_like(stable_tiles); garbage[8] = 1          # an all-unknown window
+    env.state_reader.read = lambda: bogus
+    env.state_reader.tiles.window = lambda: garbage                # what a relocated read would yield
+    try:
+        obs, *_ = env.step(0)
+    finally:
+        env.state_reader.read, env.state_reader.tiles.window = real_read, real_window
+    assert np.array_equal(obs["tiles"], stable_tiles), "a transition step produced a fresh window"
+    env.close()
+    print("test_tiles_reuse_previous_window_during_map_transition PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1722,4 +1755,6 @@ if __name__ == "__main__":
     test_damage_pays_nothing_across_battle_start_and_end()
     test_frontier_pays_toward_unvisited_and_charges_away_and_loops_net_zero()
     test_frontier_pays_nothing_on_a_map_change()
+    test_observation_has_tiles_and_battle()
+    test_tiles_reuse_previous_window_during_map_transition()
     print("\nall env tests passed")

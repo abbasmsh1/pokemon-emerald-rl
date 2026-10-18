@@ -144,6 +144,22 @@ def test_unresolvable_tileset_reads_unknown():
     print("test_unresolvable_tileset_reads_unknown PASSED")
 
 
+def test_window_before_the_game_starts_is_unknown():
+    """boot.state's first frames have no save block; a worker steps there
+    before the game is up and must get an all-unknown window, not a crash."""
+    import tilemap
+    env = _dialogue_env()
+    real = tilemap.read_save_block_1
+    tilemap.read_save_block_1 = lambda gba: None
+    try:
+        w = env.state_reader.tiles.window()
+    finally:
+        tilemap.read_save_block_1 = real
+    assert (w[CLASSES.index("unknown")] == 1).all(), "no save block did not read as unknown"
+    env.close()
+    print("test_window_before_the_game_starts_is_unknown PASSED")
+
+
 def test_npc_tiles_are_marked():
     """dialogue.state has Prof. Birch standing next to the player."""
     env = _dialogue_env()
@@ -180,6 +196,7 @@ if __name__ == "__main__":
     test_encounter_tile_is_grass()
     test_edge_of_map_reads_outside()
     test_unresolvable_tileset_reads_unknown()
+    test_window_before_the_game_starts_is_unknown()
     test_npc_tiles_are_marked()
     test_window_read_is_cheap()
     print("\nall tilemap tests passed")

@@ -31,7 +31,11 @@ rm -rf __pycache__
 # on-screen text) and the extractor gained a learned text encoder and an
 # inverse-dynamics head (extractor.py). New observation space, new policy.
 # checkpoints/nature2 keeps the 54M-step lineage that learned the door pump.
-CKPT_DIR=checkpoints/nature3
+# nature4: the observation gained "tiles" (an 11x15 window of tile classes
+# read from the map grid) and "battle" (HP, PP, level ratio, move nature from
+# the battle Pokemon array). New observation space, new policy; nature3 keeps
+# the previous lineage.
+CKPT_DIR=checkpoints/nature4
 ARGS="--steps 100000000 --backbone agent --batch-size 128 --max-steps 0 --coverage-every 250000 --checkpoint-dir $CKPT_DIR"
 MIN_FREE_MB=3000
 LOG=service.log

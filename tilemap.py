@@ -132,13 +132,15 @@ class TileMapReader:
     def window(self) -> np.ndarray:
         """(len(CLASSES), TILE_H, TILE_W) uint8 one-hot, centred on the player."""
         out = np.zeros((len(CLASSES), TILE_H, TILE_W), dtype=np.uint8)
-        pos = read_save_block_1(self.gba)["pos"]
-        px, py = pos["x"], pos["y"]
+        sb1 = read_save_block_1(self.gba)
         w, h, ptr = self._layout()
-        tables = self._attributes()
-        if tables is None:
+        tables = self._attributes() if sb1 is not None else None
+        # No save block yet (the game has not started) or no resolvable
+        # tileset: the whole window is "unknown", never a guess.
+        if tables is None or not (0x02000000 <= ptr < 0x02040000):
             out[CLASSES.index("unknown")] = 1
             return out
+        px, py = sb1["pos"]["x"], sb1["pos"]["y"]
         map_w, map_h = w - MAP_OFFSET_W, h - MAP_OFFSET_H
         x0, y0 = px - TILE_W // 2, py - TILE_H // 2
         # One read covering the window's rows of the padded grid.

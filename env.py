@@ -22,7 +22,9 @@ from state import (
     GameState,
     force_fast_text,
 )
+from battle import BATTLE_SIZE
 from frontier import nearest_unvisited_distance
+from tilemap import CLASSES, TILE_H, TILE_W
 from text import our_attack, player_fled, wild_encounter
 
 SCREEN_SHAPE = (3, 80, 120)
@@ -420,7 +422,12 @@ class EmeraldEnv(gym.Env):
             "screen": gym.spaces.Box(0, 255, SCREEN_SHAPE, dtype=np.uint8),
             "state": gym.spaces.Box(-1.0, 1.0, (STATE_SIZE,), dtype=np.float32),
             "text": gym.spaces.Box(0, TEXT_VOCAB - 1, (TEXT_TOKENS,), dtype=np.int64),
+            # Exact tile classes around the player and the battle state, both
+            # straight from RAM; see tilemap.py and battle.py.
+            "tiles": gym.spaces.Box(0, 1, (len(CLASSES), TILE_H, TILE_W), dtype=np.uint8),
+            "battle": gym.spaces.Box(0.0, 1.0, (BATTLE_SIZE,), dtype=np.float32),
         })
+        self._tiles: np.ndarray | None = None
 
     def _raw_frame(self) -> np.ndarray:
         """Read the framebuffer directly. Byte-identical to the PIL path and
@@ -502,6 +509,8 @@ class EmeraldEnv(gym.Env):
             "screen": np.stack(self._frames, axis=0),
             "state": self._encode_state(s),
             "text": tokenize_text(s["screen_text"]),
+            "tiles": self._tiles,
+            "battle": np.clip(s["battle"], 0.0, 1.0).astype(np.float32),
         }
 
     def _refresh_novelty(self) -> None:
@@ -764,6 +773,7 @@ class EmeraldEnv(gym.Env):
 
         self.state_reader.reset()
         s = self.state_reader.read()
+        self._tiles = self.state_reader.tiles.window()
         self._prev = s
         self._max_flags = {
             "script": s["script_flag_count"],
@@ -822,6 +832,10 @@ class EmeraldEnv(gym.Env):
         # Ceiling: a genuine badge or whiteout landing exactly on a transition step
         # is recognised one step late.
         stable = self._prev is None or s["map"] == self._prev["map"]
+        # The window is read from the same relocating save block as the rest;
+        # mid-transition it would be garbage, so the last stable one is reused.
+        if stable or self._tiles is None:
+            self._tiles = self.state_reader.tiles.window()
         if stable:
             # ponytail: same in-flight read that fabricates badges also fabricates
             # coordinates, and pos is uint16, so a garbage value up to 65535 lands
