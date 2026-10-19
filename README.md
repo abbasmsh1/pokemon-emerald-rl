@@ -114,7 +114,7 @@ flag exists to answer.
 | Party level gained | +1 |
 | Party HP fraction | +/-3 per full bar, both directions |
 | Running from a battle | -5 |
-| Our Pokemon uses a move | +0.2 per message |
+| Our Pokemon uses a move | +0.2 per message; a status move (no power) -0.3 more |
 | A wild battle starts | +1 per encounter, first 5 per map per 50k-step window |
 | Reaching the next map on the current story stage | +20, once |
 | Finishing a story stage (rival, Pokedex, badge) | +30, once |

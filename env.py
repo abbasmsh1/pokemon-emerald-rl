@@ -26,7 +26,8 @@ from battle import BATTLE_SIZE
 from frontier import nearest_unvisited_distance
 from tilemap import CLASSES, TILE_H, TILE_W
 from knowledge import DIRECTIONS, STORY, Knowledge
-from text import (evolved, evolving, not_very_effective, our_attack, player_fled, someone_attacked,
+from battle import MOVE_NAMES
+from text import (evolved, evolving, move_used, not_very_effective, our_attack, player_fled, someone_attacked,
                   super_effective, wild_encounter)
 
 SCREEN_SHAPE = (3, 80, 120)
@@ -126,6 +127,9 @@ def suppress_stdout():
         os.close(devnull)
 
 
+MOVE_IDS = {name: mid for mid, name in MOVE_NAMES.items()}
+
+
 class EmeraldEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 60}
 
@@ -207,6 +211,12 @@ class EmeraldEnv(gym.Env):
     # not only when the experience lands at the end of a battle it may lose.
     # Small against EXP: a wild win is 0.4-0.8 of experience, an attack 0.2.
     ATTACK_REWARD = 0.2
+    # A slight charge for using a status move (base power 0: Growl, Focus
+    # Energy, Tail Whip...), so one nets -0.1 against a damaging move's +0.2
+    # (2026-10-19, Abbas). Status moves are not useless, but the early fights
+    # are won by hitting, and a policy that alternates Growl and Scratch
+    # takes twice as long.
+    STATUS_MOVE_PENALTY = -0.3
     # A wild battle starting, paid once per "Wild X appeared!" message. This is
     # the grass reward: encounters happen only where wild Pokemon are, so it
     # pays roaming tall grass without resolving the tile under the player, and
@@ -725,6 +735,9 @@ class EmeraldEnv(gym.Env):
             attacking = our_attack(s["screen_text"])
             if attacking and s["screen_text"] != prev["screen_text"]:
                 reward += self._pay("attack", self.ATTACK_REWARD)
+                move_id = MOVE_IDS.get(move_used(s["screen_text"]) or "")
+                if move_id and self.knowledge.move(move_id)[1] == 0:
+                    reward += self._pay("status_move", self.STATUS_MOVE_PENALTY)
             new_text = s["screen_text"] != prev["screen_text"]
             if new_text and evolved(s["screen_text"]):
                 reward += self._pay("evolution", self.EVOLUTION_REWARD)

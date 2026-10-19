@@ -143,5 +143,14 @@ def player_fled(text: str) -> bool:
     return bool(_PLAYER_FLED.search(text))
 
 
+_MOVE_NAME = re.compile(r"\bused ([A-Z0-9 .'-]+?)!", re.IGNORECASE)
+
+
+def move_used(text: str) -> str | None:
+    """The move name in "X used NAME!", upper-cased, or None."""
+    m = _MOVE_NAME.search(text)
+    return m.group(1).strip().upper() if m else None
+
+
 def our_attack(text: str) -> bool:
     return bool(_OUR_ATTACK.search(text))

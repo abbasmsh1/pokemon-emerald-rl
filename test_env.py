@@ -1855,6 +1855,26 @@ def test_heal_guide_points_to_the_last_center_when_hurt():
     print("test_heal_guide_points_to_the_last_center_when_hurt PASSED")
 
 
+
+def test_status_moves_cost_a_little():
+    """A status move (no base power) is net slightly negative; a damaging move
+    still pays the full attack reward."""
+    env = EmeraldEnv()
+    env.reset()
+    s = dict(env.state_reader.read(), screen_text="")
+    env._prev = dict(s); env._compute_reward(s); env.drain_reward_terms()
+    env._compute_reward(dict(s, screen_text="TORCHIC used GROWL!"))
+    status = env.drain_reward_terms()
+    env._compute_reward(dict(s, screen_text="TORCHIC used SCRATCH!"))
+    damaging = env.drain_reward_terms()
+    net_status = status.get("attack", 0) + status.get("status_move", 0)
+    assert net_status < 0, f"a status move netted {net_status}: {status}"
+    assert net_status > -0.5, f"the status penalty should be slight: {net_status}"
+    assert "status_move" not in damaging and damaging.get("attack", 0) > 0.1, damaging
+    env.close()
+    print("test_status_moves_cost_a_little PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1922,6 +1942,7 @@ if __name__ == "__main__":
     test_counters_clear_on_income_not_net_reward()
     test_long_garbage_window_nets_zero()
     test_our_attack_pays_once_per_message()
+    test_status_moves_cost_a_little()
     test_pressing_into_a_wall_is_charged()
     test_bump_exempts_battles_menus_and_moves()
     test_wild_encounter_pays_once_per_message()
