@@ -1529,9 +1529,12 @@ def test_wild_encounter_pays_once_per_message():
     hit = dict(base, screen_text="Wild ZIGZAGOON appeared!")
     env._compute_reward(hit)
     env._compute_reward(hit)                                        # same line: no
+    # A stale "appeared!" fragment carried ahead of the next message must not
+    # re-pay: the edge is on the text changing, and the detector is unanchored.
+    env._compute_reward(dict(base, screen_text="Wild ZIGZAGOON appeared! Go! TORCHIC!"))
     env._compute_reward(dict(base, screen_text="Go! TORCHIC!"))     # not an encounter
     paid = env.drain_reward_terms().get("encounter", 0.0)
-    assert abs(paid - EmeraldEnv.ENCOUNTER_REWARD) < 1e-6 and paid > 0.5, f"encounter paid {paid}"
+    assert abs(paid - 2 * EmeraldEnv.ENCOUNTER_REWARD) < 1e-6 and paid > 0.5, f"encounter paid {paid}"
     assert EmeraldEnv.FLEE_PENALTY + EmeraldEnv.ENCOUNTER_REWARD < -1.0, "encounter-and-flee must stay clearly negative"
     env.close()
     print("test_wild_encounter_pays_once_per_message PASSED")
