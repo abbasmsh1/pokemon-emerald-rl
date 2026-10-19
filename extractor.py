@@ -41,7 +41,7 @@ class AgentExtractor(BaseFeaturesExtractor):
         battle_dim = int(observation_space["battle"].shape[0])
         # Knowledge keys (moves, guide) pass straight through like battle;
         # spaces without them (older envs, tests) simply contribute nothing.
-        self._passthrough = [k for k in ("battle", "moves", "guide") if k in observation_space.spaces]
+        self._passthrough = [k for k in ("battle", "moves", "guide", "heal", "map_info", "evo") if k in observation_space.spaces]
         extra = sum(int(observation_space[k].shape[0]) for k in self._passthrough)
         super().__init__(observation_space, features_dim=CNN_FEATURES + state_dim + TEXT_EMBED + TILE_FEATURES + extra)
 

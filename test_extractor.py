@@ -44,11 +44,14 @@ def test_features_dim_matches_output():
         "tiles": torch.zeros(2, 9, 11, 15),
         "battle": torch.zeros(2, 12),
         "moves": torch.zeros(2, 8),
-        "guide": torch.zeros(2, 6),
+        "guide": torch.zeros(2, 8),
+        "heal": torch.zeros(2, 6),
+        "map_info": torch.zeros(2, 3),
+        "evo": torch.zeros(2, 1),
     }
     out = ext(obs)
     assert out.shape == (2, ext.features_dim), f"{out.shape} vs {ext.features_dim}"
-    assert ext.features_dim == CNN_FEATURES + space["state"].shape[0] + TEXT_EMBED + 128 + 12 + 8 + 6
+    assert ext.features_dim == CNN_FEATURES + space["state"].shape[0] + TEXT_EMBED + 128 + 12 + 8 + 8 + 6 + 3 + 1
     assert torch.isfinite(out).all()
     print("test_features_dim_matches_output PASSED")
 
@@ -113,14 +116,17 @@ def _obs(space, n=2, tiles=None):
         "tiles": torch.as_tensor(t),
         "battle": torch.zeros(n, 12),
         "moves": torch.zeros(n, 8),
-        "guide": torch.zeros(n, 6),
+        "guide": torch.zeros(n, 8),
+        "heal": torch.zeros(n, 6),
+        "map_info": torch.zeros(n, 3),
+        "evo": torch.zeros(n, 1),
     }
 
 
 def test_features_dim_includes_tiles_and_battle():
     space = _space()
     ext = AgentExtractor(space, n_actions=8)
-    assert ext.features_dim == 512 + 29 + 32 + 128 + 12 + 8 + 6, ext.features_dim
+    assert ext.features_dim == 512 + 29 + 32 + 128 + 12 + 8 + 8 + 6 + 3 + 1, ext.features_dim
     out = ext(_obs(space))
     assert out.shape == (2, ext.features_dim)
     print("test_features_dim_includes_tiles_and_battle PASSED")

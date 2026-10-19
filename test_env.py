@@ -1803,13 +1803,27 @@ def test_observation_has_moves_and_guide():
     env = EmeraldEnv()
     obs, _ = env.reset()
     assert env.observation_space.contains(obs)
-    assert obs["moves"].shape == (8,) and obs["guide"].shape == (6,)
+    assert obs["moves"].shape == (8,) and obs["guide"].shape == (8,)
+    assert obs["heal"].shape == (6,) and obs["map_info"].shape == (3,) and obs["evo"].shape == (1,)
+    assert obs["map_info"][0] == 1.0, "Route 103 has grass encounters"
+    assert abs(obs["evo"][0] - 9 / 50) < 1e-6, f"Torchic Lv7 evolves in 9 levels: {obs['evo']}"
     assert obs["guide"][2] == 1.0, f"Route 103 -> Oldale is south: {obs['guide']}"   # north,south,west,east at 1..4
     assert obs["guide"][5] == 1.0
     b = EmeraldEnv(state_path="battle.state"); ob, _ = b.reset()
     assert ob["moves"][4:].any(), "battle fixture: move powers missing"
     env.close(); b.close()
     print("test_observation_has_moves_and_guide PASSED")
+
+
+def test_heal_guide_points_to_the_last_center_when_hurt():
+    env = EmeraldEnv()
+    env.reset()                                          # party HP 24%, last heal: Oldale, south of Route 103
+    s = env.state_reader.read()
+    h = env._heal(dict(s, party_hp_frac=0.24))
+    assert h[0] == 1.0 and h[2] == 1.0, f"hurt on Route 103: should point south to Oldale: {h}"
+    assert not env._heal(dict(s, party_hp_frac=0.9)).any(), "healthy: no heal guidance"
+    env.close()
+    print("test_heal_guide_points_to_the_last_center_when_hurt PASSED")
 
 
 if __name__ == "__main__":
@@ -1888,6 +1902,7 @@ if __name__ == "__main__":
     test_effectiveness_messages_pay_only_after_our_move()
     test_walkthrough_pays_the_next_waypoint_only_once()
     test_observation_has_moves_and_guide()
+    test_heal_guide_points_to_the_last_center_when_hurt()
     test_first_ever_section_pays_extra_and_survives_refresh()
     test_damage_pays_on_enemy_hp_falling_and_charges_on_healing()
     test_damage_pays_nothing_across_battle_start_and_end()

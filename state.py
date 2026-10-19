@@ -102,6 +102,8 @@ class GameState:
                 "pos": (0, 0),
                 "party_levels": [],
                 "party_exp": 0,
+                "lead": (0, 0),
+                "heal_location": None,
                 "screen_text": "",
                 "party_hp_frac": 0.0,
                 "money": 0,
@@ -170,6 +172,11 @@ class GameState:
             "pos": (pos["x"], pos["y"]),
             "party_levels": levels,
             "party_exp": party_exp,
+            # (species, level) of the lead Pokemon, for evolution knowledge.
+            "lead": (party[0]["box"]["substructs"][0]["species"], party[0]["level"]) if party else (0, 0),
+            # Where a whiteout returns the player: the last Pokemon Center used.
+            "heal_location": ((sb1["lastHealLocation"]["mapGroup"], sb1["lastHealLocation"]["mapNum"]),
+                              (sb1["lastHealLocation"]["x"], sb1["lastHealLocation"]["y"])),
             "screen_text": self.text.read(),
             "party_hp_frac": hp_frac,
             "options": options,

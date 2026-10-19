@@ -65,9 +65,35 @@ def test_waypoints_and_exit_direction():
     print("test_waypoints_and_exit_direction PASSED")
 
 
+def test_warps_wild_levels_and_evolutions():
+    env, k = _k()                                        # Route 103
+    assert ((45, 6), (24, 106)) in k.warps(), k.warps()
+    assert k.wild_levels((0, 16)) == (2, 3)              # Route 101
+    assert k.wild_levels((24, 11)) == (5, 6)             # Petalburg Woods
+    assert k.wild_levels((0, 10)) is None                # Oldale: no grass
+    assert k.levels_to_evolve(280, 7) == 9               # Torchic evolves at 16
+    assert k.levels_to_evolve(277, 16) == 0              # Treecko at 16: due now
+    env.close()
+    print("test_warps_wild_levels_and_evolutions PASSED")
+
+
+def test_route_to_a_map_by_edge_and_by_door():
+    env, k = _k()
+    pos = env.state_reader.read()["pos"]
+    d, dist, door = k.route_to((0, 10), pos)             # Oldale is off the south edge
+    assert d == "south" and not door and dist >= 0, (d, dist, door)
+    d, dist, door = k.route_to((24, 106), pos)           # only reachable through the warp
+    assert door and d in ("north", "south", "west", "east") and dist == abs(45 - pos[0]) + abs(6 - pos[1]), (d, dist, door)
+    assert k.route_to((7, 7), pos) == (None, 0, False)   # unreachable from here
+    env.close()
+    print("test_route_to_a_map_by_edge_and_by_door PASSED")
+
+
 if __name__ == "__main__":
     test_species_and_move_tables()
     test_type_chart()
     test_move_features_on_the_battle_fixture()
     test_waypoints_and_exit_direction()
+    test_warps_wild_levels_and_evolutions()
+    test_route_to_a_map_by_edge_and_by_door()
     print("\nall knowledge tests passed")

@@ -464,7 +464,13 @@ class EmeraldEnv(gym.Env):
             # Walkthrough: progress through WAYPOINTS, a one-hot of the edge
             # of this map that leads to the next waypoint, and whether there
             # is such an edge (a door-only route reads all zeros there).
-            "guide": gym.spaces.Box(0.0, 1.0, (6,), dtype=np.float32),
+            "guide": gym.spaces.Box(0.0, 1.0, (8,), dtype=np.float32),
+            # When the party is hurt: the way to the last Pokemon Center.
+            "heal": gym.spaces.Box(0.0, 1.0, (6,), dtype=np.float32),
+            # This map's wild encounters against our level.
+            "map_info": gym.spaces.Box(0.0, 1.0, (3,), dtype=np.float32),
+            # Levels until the lead Pokemon evolves (1.0 if it does not).
+            "evo": gym.spaces.Box(0.0, 1.0, (1,), dtype=np.float32),
         })
         self._tiles: np.ndarray | None = None
 
@@ -551,7 +557,10 @@ class EmeraldEnv(gym.Env):
             "tiles": self._tiles,
             "battle": np.clip(s["battle"], 0.0, 1.0).astype(np.float32),
             "moves": self.knowledge.move_features(s.get("our_moves", (0, 0, 0, 0)), s.get("enemy_id", (0, 0))[0]),
-            "guide": self._guide(),
+            "guide": self._guide(s),
+            "heal": self._heal(s),
+            "map_info": self._map_info(s),
+            "evo": self._evo(s),
         }
 
     def _refresh_novelty(self) -> None:
@@ -861,15 +870,61 @@ class EmeraldEnv(gym.Env):
             self._waypoint = max(self._waypoint, WAYPOINTS.index(s["map"]))
         return self._observation(s), self._info(s)
 
-    def _guide(self) -> np.ndarray:
-        g = np.zeros(6, dtype=np.float32)
+    HEAL_BELOW = 0.5           # party HP fraction under which the heal guide switches on
+    ROUTE_DIST_SCALE = 64.0
+
+    def _guide(self, s: dict) -> np.ndarray:
+        """[progress, N, S, W, E, has route, distance / 64, through a door]:
+        the way to the next walkthrough map, off an edge or through a warp."""
+        g = np.zeros(8, dtype=np.float32)
         g[0] = max(self._waypoint, 0) / (len(WAYPOINTS) - 1)
         if self._waypoint + 1 < len(WAYPOINTS):
-            d = self.knowledge.exit_direction(WAYPOINTS[self._waypoint + 1])
+            d, dist, door = self.knowledge.route_to(WAYPOINTS[self._waypoint + 1], s["pos"])
             if d is not None:
                 g[1 + DIRECTIONS.index(d)] = 1.0
                 g[5] = 1.0
+                g[6] = min(dist / self.ROUTE_DIST_SCALE, 1.0)
+                g[7] = 1.0 if door else 0.0
         return g
+
+    def _heal(self, s: dict) -> np.ndarray:
+        """[hurt, N, S, W, E, distance / 64]: toward the last Pokemon Center
+        when party HP is under HEAL_BELOW; all zeros otherwise. On its map it
+        points at the Center's door step, elsewhere at the map edge leading
+        there."""
+        h = np.zeros(6, dtype=np.float32)
+        loc = s.get("heal_location")
+        if not s.get("party_levels") or s.get("party_hp_frac", 1.0) >= self.HEAL_BELOW or not loc:
+            return h
+        h[0] = 1.0
+        target_map, target_xy = loc
+        if tuple(target_map) == tuple(s["map"]):
+            d, dist = self.knowledge.point_to(target_xy, s["pos"])
+        else:
+            d, dist, _door = self.knowledge.route_to(target_map, s["pos"])
+        if d is not None:
+            h[1 + DIRECTIONS.index(d)] = 1.0
+            h[5] = min(dist / self.ROUTE_DIST_SCALE, 1.0)
+        return h
+
+    def _map_info(self, s: dict) -> np.ndarray:
+        """[has grass encounters, (max wild level - ours + 20) / 40,
+        (min wild level - ours + 20) / 40]: 0.5 means the wild Pokemon here
+        match our level, above 0.5 that they outlevel us."""
+        m = np.zeros(3, dtype=np.float32)
+        levels = self.knowledge.wild_levels(s["map"])
+        ours = max(s.get("party_levels") or [0])
+        if levels is None or not ours:
+            return m
+        m[0] = 1.0
+        m[1] = np.clip((levels[1] - ours + 20) / 40.0, 0.0, 1.0)
+        m[2] = np.clip((levels[0] - ours + 20) / 40.0, 0.0, 1.0)
+        return m
+
+    def _evo(self, s: dict) -> np.ndarray:
+        species, level = s.get("lead", (0, 0))
+        n = self.knowledge.levels_to_evolve(species, level)
+        return np.array([1.0 if n is None else min(n, 50) / 50.0], dtype=np.float32)
 
     def step(self, action: int):
         key = self.ACTIONS[action]

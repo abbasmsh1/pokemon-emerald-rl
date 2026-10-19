@@ -287,8 +287,16 @@ Oldale). Three things are built on it:
 - **Walkthrough.** `WAYPOINTS` lists the story's maps to Rustboro, including
   the return through Oldale after the rival on Route 103. Reaching the next one
   pays +20 once; skipping ahead or coming back pays nothing. The `guide`
-  observation gives progress and which edge of the current map leads to the
-  next waypoint.
+  observation gives progress, the direction and distance to the next
+  waypoint, and whether the way there is a map edge or a door (from the map's
+  warp list).
+- **Where to heal.** With party HP under half, the `heal` observation points
+  at the last Pokemon Center used (from the save data), on its map at the
+  door step, elsewhere at the edge leading there.
+- **How dangerous this map is.** `map_info` compares this map's wild
+  encounter levels (from the ROM's encounter tables) with ours.
+- **Evolution.** `evo` is the number of levels until the lead Pokemon
+  evolves, from the evolution table.
 
 ## The SLM teacher experiment (stopped)
 
@@ -335,7 +343,7 @@ starts farming itself shows up as a curve climbing away from the others.
 | `tilemap.py` | Tile-class window from the map grid; addresses from `tools/probe_tilemap.py` |
 | `battle.py` | Battle state from the battle Pokemon array and the move table |
 | `frontier.py` | Distance to the nearest never-visited section |
-| `knowledge.py` | Species types, move types and power, type chart, map connections, walkthrough |
+| `knowledge.py` | Species types, move types and power, type chart, map connections and warps, wild encounter levels, evolutions, walkthrough |
 | `teacher.py`, `demos.py` | SLM teacher and its demonstration shards (experiment, stopped at its gate) |
 | `text.py` | Follows the game's text printer to the exact on-screen string, no OCR |
 | `coverage.py` | Renders the exploration overlay |

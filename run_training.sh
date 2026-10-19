@@ -39,7 +39,9 @@ rm -rf __pycache__
 # each move against the current enemy) and "guide" (walkthrough progress and
 # the exit toward the next story map), both from knowledge.py. New
 # observation space, new policy; nature4 keeps the previous lineage.
-CKPT_DIR=checkpoints/nature5
+# nature6: guide grew to 8 (distance, door) and heal, map_info and evo were
+# added (knowledge.py). New observation space, new policy.
+CKPT_DIR=checkpoints/nature6
 ARGS="--steps 100000000 --backbone agent --batch-size 128 --max-steps 0 --coverage-every 250000 --checkpoint-dir $CKPT_DIR"
 MIN_FREE_MB=3000
 LOG=service.log

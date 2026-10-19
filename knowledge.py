@@ -14,6 +14,16 @@ that are not in doubt (tools probe, 2026-10-19):
     map header     0x02037318  +0x0C -> {s32 count; MapConnection *list},
                                12 bytes each: dir +0, mapGroup +8, mapNum +9
                                Route 103 south -> Oldale (dir 1)
+                               +0x04 -> MapEvents: warpCount +1, warps* +8,
+                               8 bytes each {s16 x, s16 y, u8 elev, u8 id,
+                               u8 mapNum, u8 mapGroup}; Route 103 (45,6)->(24,106)
+    wild headers   0x08552D48  20 bytes/map {u8 group, u8 num, pad, land*, ...}
+                               0xFF-terminated; land* -> {u8 rate; mons*},
+                               12 x {u8 min, u8 max, u16 species};
+                               Route 101 levels 2-3, Petalburg Woods 5-6
+    evolutions     0x0832531C  40 bytes/species = 5 x {u16 method, u16 param,
+                               u16 target, pad}; method 4 = by level;
+                               Torchic/Treecko -> 16
 """
 
 import struct
@@ -29,6 +39,10 @@ MAP_HEADER = 0x02037318
 CONNECTION_DIRS = {1: "south", 2: "north", 3: "west", 4: "east"}   # dive/emerge (5, 6) ignored
 DIRECTIONS = ("north", "south", "west", "east")
 MAX_POWER = 150.0
+WILD_HEADERS = 0x08552D48
+EVOLUTION_TABLE = 0x0832531C
+EVO_LEVEL = 4
+BACKUP_MAP_LAYOUT = 0x03005DC0     # {s32 w; s32 h; ...}; map size = w - 15, h - 14
 
 # The story's route to the first badge, as map ids. Repeats are real: the
 # rival battle on Route 103 sends the player back through Oldale before the
@@ -124,3 +138,83 @@ class Knowledge:
             if (e[8], e[9]) == tuple(target_map) and e[0] in CONNECTION_DIRS:
                 return CONNECTION_DIRS[e[0]]
         return None
+
+    # --- doors, encounters, evolutions (2026-10-19) -----------------------
+
+    def warps(self) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+        """((x, y), destination map) for every warp on the current map."""
+        ev = self.gba.read_u32(MAP_HEADER + 0x04)
+        if not 0x08000000 <= ev < 0x0A000000:
+            return []
+        head = self._rom(ev, 12)
+        count, ptr = head[1], struct.unpack_from("<I", head, 8)[0]
+        if not 0x08000000 <= ptr < 0x0A000000 or count > 64:
+            return []
+        raw = self._rom(ptr, 8 * count)
+        out = []
+        for k in range(count):
+            x, y, _el, _id, num, grp = struct.unpack_from("<hhBBBB", raw, 8 * k)
+            out.append(((x, y), (grp, num)))
+        return out
+
+    def _map_size(self) -> tuple[int, int]:
+        w, h = struct.unpack("<ii", bytes(self.gba.read_memory(BACKUP_MAP_LAYOUT, 8)))
+        return w - 15, h - 14
+
+    def route_to(self, target_map, pos) -> tuple[str | None, int, bool]:
+        """(compass direction, distance in tiles, via a door) from `pos` on the
+        current map toward `target_map`: off a connected edge, else through a
+        warp that leads there, else (None, 0, False)."""
+        x, y = pos
+        edge = self.exit_direction(target_map)
+        if edge is not None:
+            w, h = self._map_size()
+            dist = {"north": y, "south": h - 1 - y, "west": x, "east": w - 1 - x}[edge]
+            return edge, max(dist, 0), False
+        doors = [(abs(wx - x) + abs(wy - y), wx, wy) for (wx, wy), dest in self.warps() if dest == tuple(target_map)]
+        if doors:
+            dist, wx, wy = min(doors)
+            return compass(wx - x, wy - y), dist, True
+        return None, 0, False
+
+    def point_to(self, target_xy, pos) -> tuple[str | None, int]:
+        dx, dy = target_xy[0] - pos[0], target_xy[1] - pos[1]
+        return compass(dx, dy), abs(dx) + abs(dy)
+
+    def _wild_table(self) -> dict:
+        if not hasattr(self, "_wild"):
+            self._wild = {}
+            a = WILD_HEADERS
+            for _ in range(512):
+                e = self._rom(a, 20)
+                if e[0] == 0xFF:
+                    break
+                land = struct.unpack_from("<I", e, 4)[0]
+                if land:
+                    mons = struct.unpack_from("<I", self._rom(land, 8), 4)[0]
+                    lv = self._rom(mons, 48)
+                    levels = [lv[4 * q] for q in range(12)] + [lv[4 * q + 1] for q in range(12)]
+                    self._wild[(e[0], e[1])] = (min(levels), max(levels))
+                a += 20
+        return self._wild
+
+    def wild_levels(self, map_key) -> tuple[int, int] | None:
+        """(min, max) wild level in this map's grass, or None without grass."""
+        return self._wild_table().get(tuple(map_key))
+
+    def levels_to_evolve(self, species: int, level: int) -> int | None:
+        """Levels until `species` evolves by level-up; None if it does not."""
+        if not species:
+            return None
+        raw = self._rom(EVOLUTION_TABLE + 40 * species, 40)
+        need = [struct.unpack_from("<HH", raw, 8 * k)[1] for k in range(5)
+                if struct.unpack_from("<H", raw, 8 * k)[0] == EVO_LEVEL]
+        return max(min(need) - level, 0) if need else None
+
+
+def compass(dx: int, dy: int) -> str | None:
+    if dx == 0 and dy == 0:
+        return None
+    if abs(dx) >= abs(dy):
+        return "east" if dx > 0 else "west"
+    return "south" if dy > 0 else "north"
