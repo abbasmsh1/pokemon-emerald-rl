@@ -105,12 +105,12 @@ flag exists to answer.
 | Event | Reward |
 | --- | --- |
 | Gym badge | +100 |
-| New map entered | +2 |
+| New map entered | +5 |
 | New tile visited | +0.05, capped at 400/map |
 | New 8x8 section entered | +0.5, plus +1 the first time ever in the process |
 | Script event flag set | +1 |
 | Trainer defeated | +2 |
-| Experience gained | +0.02 per point (a wild win is 20-40) |
+| Experience gained | +0.01 per point (a wild win is 20-40) |
 | Party level gained | +1 |
 | Party HP fraction | +/-3 per full bar, both directions |
 | Running from a battle | -5 |

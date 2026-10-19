@@ -163,7 +163,9 @@ class EmeraldEnv(gym.Env):
     FLAG_SETTLE_STEPS = 3
 
     BADGE_REWARD = 100.0
-    NEW_MAP_REWARD = 2.0
+    # 5, up from 2 (2026-10-19, Abbas): with the encounter bonus capped, the
+    # 3.4M policy still preferred grinding Route 101's grass to leaving it.
+    NEW_MAP_REWARD = 5.0
     NEW_TILE_REWARD = 0.05
     # Each map is diced into SECTION_SIZE-square blocks. Sits between the tile and
     # map terms: pacing inside one block earns nothing after the first step into
@@ -189,7 +191,9 @@ class EmeraldEnv(gym.Env):
     # fleeing pays nothing at all. Fleeing was close to optimal before this:
     # exploration paid continuously outside battle and a battle paid only on a
     # rare level-up, so running away got back to the paying activity fastest.
-    EXP_REWARD = 0.02
+    # 0.01, down from 0.02 (2026-10-19, Abbas): experience was the second
+    # largest income from grinding one patch of grass (+3.4 per 1k).
+    EXP_REWARD = 0.01
     # Charged when the player chooses to run. A wild Pokemon fleeing on its own
     # is not the agent's doing and is deliberately not penalised.
     # Harsher than the -1 it started at. At -1 a single wild win (~+0.5) nearly
