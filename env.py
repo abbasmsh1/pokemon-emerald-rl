@@ -207,6 +207,14 @@ class EmeraldEnv(gym.Env):
     # it pays for seeking the fights that leveling needs. Running from the
     # encounter costs 5x this, so encounter-and-flee stays clearly negative.
     ENCOUNTER_REWARD = 1.0
+    # Paid for the first ENCOUNTER_CAP_PER_MAP encounters on each map per
+    # novelty window, then nothing until the window refreshes. Uncapped, the
+    # 3.4M nature4 policy farmed Route 101's grass: 43 battles in 4,000 steps,
+    # 97% of its steps on that one map, encounter its largest income term
+    # (+10.3 per 1k) and worth more than going anywhere new even after six
+    # whiteouts. Experience and levels still pay on a high-water mark, so real
+    # leveling is still rewarded; only the encounter bonus itself stops.
+    ENCOUNTER_CAP_PER_MAP = 5
     # Damage dealt, potential-based on the enemy's HP fraction: a fall is paid,
     # a rise (the enemy healing) is charged at the same rate, and nothing is
     # booked across a battle's start or end, so a new enemy's full bar is not
@@ -405,6 +413,7 @@ class EmeraldEnv(gym.Env):
         self._steps_since_reward = 0
         self._recent_moves: deque = deque(maxlen=self.LOITER_LIMIT)
         self._frozen_steps = 0
+        self._encounters_per_map: dict[tuple[int, int], int] = {}
         self._frontier_prev: int | None = None
         self._last_action: int | None = None
         self._moved = False
@@ -524,6 +533,7 @@ class EmeraldEnv(gym.Env):
         self._visited_maps.clear()
         self._visited_sections.clear()
         self._tiles_per_map.clear()
+        self._encounters_per_map.clear()
 
     def _pay(self, term: str, amount: float) -> float:
         """Book `amount` against a named term and hand it back to the caller.
@@ -672,7 +682,10 @@ class EmeraldEnv(gym.Env):
             if attacking and s["screen_text"] != prev["screen_text"]:
                 reward += self._pay("attack", self.ATTACK_REWARD)
             if wild_encounter(s["screen_text"]) and s["screen_text"] != prev["screen_text"]:
-                reward += self._pay("encounter", self.ENCOUNTER_REWARD)
+                seen_here = self._encounters_per_map.get(map_key, 0)
+                if seen_here < self.ENCOUNTER_CAP_PER_MAP:
+                    self._encounters_per_map[map_key] = seen_here + 1
+                    reward += self._pay("encounter", self.ENCOUNTER_REWARD)
 
             # Damage dealt; see DAMAGE_REWARD. Only when both steps are in a
             # battle AND on the same foe. The battle array is stale, and the

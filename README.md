@@ -115,7 +115,7 @@ flag exists to answer.
 | Party HP fraction | +/-3 per full bar, both directions |
 | Running from a battle | -5 |
 | Our Pokemon uses a move | +0.2 per message |
-| A wild battle starts | +1 per encounter |
+| A wild battle starts | +1 per encounter, first 5 per map per 50k-step window |
 | Damage dealt | +0.5 per enemy HP bar, charged back on healing |
 | Walking toward the nearest never-visited section | +0.1 per section, potential-based |
 | Changing an OPTION setting | -10 |

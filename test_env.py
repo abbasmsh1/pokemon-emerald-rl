@@ -1706,6 +1706,28 @@ def test_damage_pays_nothing_when_the_enemy_changes():
     print("test_damage_pays_nothing_when_the_enemy_changes PASSED")
 
 
+
+def test_encounters_stop_paying_after_the_cap_on_one_map():
+    """The 3.4M policy farmed Route 101's grass: 43 battles in 4,000 steps,
+    encounter its largest income term, 97% of steps on one map. Encounters
+    pay for the first ENCOUNTER_CAP_PER_MAP on a map per novelty window."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    base = dict(s, screen_text="")
+    env._prev = dict(base); env._compute_reward(base); env.drain_reward_terms()
+    for k in range(EmeraldEnv.ENCOUNTER_CAP_PER_MAP + 5):
+        env._compute_reward(dict(base, screen_text=f"Wild POOCHYENA appeared! {k}"))
+        env._compute_reward(base)
+    paid = env.drain_reward_terms().get("encounter", 0.0)
+    assert abs(paid - EmeraldEnv.ENCOUNTER_CAP_PER_MAP * EmeraldEnv.ENCOUNTER_REWARD) < 1e-6, f"encounters paid {paid}"
+    env._refresh_novelty()
+    env._compute_reward(dict(base, screen_text="Wild POOCHYENA appeared! again"))
+    assert env.drain_reward_terms().get("encounter", 0.0) > 0, "the cap must reset with the novelty window"
+    env.close()
+    print("test_encounters_stop_paying_after_the_cap_on_one_map PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1776,6 +1798,7 @@ if __name__ == "__main__":
     test_pressing_into_a_wall_is_charged()
     test_bump_exempts_battles_menus_and_moves()
     test_wild_encounter_pays_once_per_message()
+    test_encounters_stop_paying_after_the_cap_on_one_map()
     test_first_ever_section_pays_extra_and_survives_refresh()
     test_damage_pays_on_enemy_hp_falling_and_charges_on_healing()
     test_damage_pays_nothing_across_battle_start_and_end()
