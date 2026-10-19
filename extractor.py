@@ -39,7 +39,11 @@ class AgentExtractor(BaseFeaturesExtractor):
         vocab = int(observation_space["text"].high.max()) + 1
         tile_c, tile_h, tile_w = observation_space["tiles"].shape
         battle_dim = int(observation_space["battle"].shape[0])
-        super().__init__(observation_space, features_dim=CNN_FEATURES + state_dim + TEXT_EMBED + TILE_FEATURES + battle_dim)
+        # Knowledge keys (moves, guide) pass straight through like battle;
+        # spaces without them (older envs, tests) simply contribute nothing.
+        self._passthrough = [k for k in ("battle", "moves", "guide") if k in observation_space.spaces]
+        extra = sum(int(observation_space[k].shape[0]) for k in self._passthrough)
+        super().__init__(observation_space, features_dim=CNN_FEATURES + state_dim + TEXT_EMBED + TILE_FEATURES + extra)
 
         self.cnn = NatureCNN(observation_space["screen"], features_dim=CNN_FEATURES)
         # padding_idx=0 keeps the pad token at a fixed zero vector, so an empty
@@ -82,8 +86,8 @@ class AgentExtractor(BaseFeaturesExtractor):
         words = self.text(observations["text"].long())
         state = torch.flatten(observations["state"], start_dim=1)
         tiles = self.tiles(observations["tiles"].float())
-        battle = torch.flatten(observations["battle"], start_dim=1)
-        return torch.cat([visual, state, words, tiles, battle], dim=1)
+        extra = [torch.flatten(observations[k], start_dim=1) for k in self._passthrough]
+        return torch.cat([visual, state, words, tiles, *extra], dim=1)
 
     def forward_error(self, screen_t: torch.Tensor, screen_t1: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         """Per-sample squared error of the forward model, shape (batch,).

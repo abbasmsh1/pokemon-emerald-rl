@@ -1728,6 +1728,90 @@ def test_encounters_stop_paying_after_the_cap_on_one_map():
     print("test_encounters_stop_paying_after_the_cap_on_one_map PASSED")
 
 
+def test_b_cannot_cancel_an_evolution():
+    """Gen 3: B during 'X is evolving!' cancels it. The env turns that B into
+    a no-op, so an evolution can never be cancelled."""
+    env = EmeraldEnv()
+    env.reset()
+    pressed = []
+    real = env.gba.core.set_keys
+    env.gba.core.set_keys = lambda *k: (pressed.append(k), real(*k))[1]
+    env._prev = dict(env._prev, screen_text="What? TORCHIC is evolving!")
+    env.step(EmeraldEnv.ACTIONS.index("B"))
+    from pygba.utils import KEY_MAP
+    assert all(KEY_MAP["B"] not in k for k in pressed), f"B was pressed during an evolution: {pressed}"
+    pressed.clear()
+    env._prev = dict(env._prev, screen_text="")
+    env.step(EmeraldEnv.ACTIONS.index("B"))
+    assert any(KEY_MAP["B"] in k for k in pressed), "B must still work outside an evolution"
+    env.gba.core.set_keys = real
+    env.close()
+    print("test_b_cannot_cancel_an_evolution PASSED")
+
+
+def test_completed_evolution_pays_once():
+    env = EmeraldEnv()
+    env.reset()
+    s = dict(env.state_reader.read(), screen_text="")
+    env._prev = dict(s); env._compute_reward(s); env.drain_reward_terms()
+    done = dict(s, screen_text="Congratulations! Your TORCHIC evolved into COMBUSKEN!")
+    env._compute_reward(done); env._compute_reward(done)
+    paid = env.drain_reward_terms().get("evolution", 0.0)
+    assert abs(paid - EmeraldEnv.EVOLUTION_REWARD) < 1e-6 and paid > 1, f"evolution paid {paid}"
+    env.close()
+    print("test_completed_evolution_pays_once PASSED")
+
+
+def test_effectiveness_messages_pay_only_after_our_move():
+    env = EmeraldEnv()
+    env.reset()
+    s = dict(env.state_reader.read(), screen_text="")
+    env._prev = dict(s); env._compute_reward(s); env.drain_reward_terms()
+    for t in ("TORCHIC used EMBER!", "It's super effective!",
+              "Wild TREECKO used POUND!", "It's super effective!",
+              "TORCHIC used SCRATCH!", "It's not very effective..."):
+        env._compute_reward(dict(s, screen_text=t))
+    terms = env.drain_reward_terms()
+    assert abs(terms.get("super_effective", 0) - EmeraldEnv.SUPER_EFFECTIVE_REWARD) < 1e-6, terms
+    assert abs(terms.get("not_effective", 0) - EmeraldEnv.NOT_EFFECTIVE_PENALTY) < 1e-6, terms
+    assert EmeraldEnv.SUPER_EFFECTIVE_REWARD > 0 > EmeraldEnv.NOT_EFFECTIVE_PENALTY
+    env.close()
+    print("test_effectiveness_messages_pay_only_after_our_move PASSED")
+
+
+def test_walkthrough_pays_the_next_waypoint_only_once():
+    from knowledge import WAYPOINTS
+    env = EmeraldEnv()
+    env.reset()                                   # anchor Route 103 -> progress 3
+    assert WAYPOINTS[env._waypoint] == env.state_reader.read()["map"], env._waypoint
+    s = env.state_reader.read()
+    nxt, later = WAYPOINTS[env._waypoint + 1], WAYPOINTS[-1]
+    env._prev = dict(s); env._compute_reward(s); env.drain_reward_terms()
+    def visit(m):
+        a = dict(s, map=m, pos=(1, 1)); env._compute_reward(a); env._compute_reward(a)
+    visit(later)                                  # skipping ahead pays nothing
+    assert "waypoint" not in env.drain_reward_terms()
+    visit(nxt)
+    assert abs(env.drain_reward_terms().get("waypoint", 0) - EmeraldEnv.WAYPOINT_REWARD) < 1e-6
+    visit(s["map"]); visit(nxt)                   # coming back pays nothing again
+    assert "waypoint" not in env.drain_reward_terms()
+    env.close()
+    print("test_walkthrough_pays_the_next_waypoint_only_once PASSED")
+
+
+def test_observation_has_moves_and_guide():
+    env = EmeraldEnv()
+    obs, _ = env.reset()
+    assert env.observation_space.contains(obs)
+    assert obs["moves"].shape == (8,) and obs["guide"].shape == (6,)
+    assert obs["guide"][2] == 1.0, f"Route 103 -> Oldale is south: {obs['guide']}"   # north,south,west,east at 1..4
+    assert obs["guide"][5] == 1.0
+    b = EmeraldEnv(state_path="battle.state"); ob, _ = b.reset()
+    assert ob["moves"][4:].any(), "battle fixture: move powers missing"
+    env.close(); b.close()
+    print("test_observation_has_moves_and_guide PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1799,6 +1883,11 @@ if __name__ == "__main__":
     test_bump_exempts_battles_menus_and_moves()
     test_wild_encounter_pays_once_per_message()
     test_encounters_stop_paying_after_the_cap_on_one_map()
+    test_b_cannot_cancel_an_evolution()
+    test_completed_evolution_pays_once()
+    test_effectiveness_messages_pay_only_after_our_move()
+    test_walkthrough_pays_the_next_waypoint_only_once()
+    test_observation_has_moves_and_guide()
     test_first_ever_section_pays_extra_and_survives_refresh()
     test_damage_pays_on_enemy_hp_falling_and_charges_on_healing()
     test_damage_pays_nothing_across_battle_start_and_end()

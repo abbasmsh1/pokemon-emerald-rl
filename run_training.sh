@@ -35,7 +35,11 @@ rm -rf __pycache__
 # read from the map grid) and "battle" (HP, PP, level ratio, move nature from
 # the battle Pokemon array). New observation space, new policy; nature3 keeps
 # the previous lineage.
-CKPT_DIR=checkpoints/nature4
+# nature5: the observation gained "moves" (type effectiveness and power of
+# each move against the current enemy) and "guide" (walkthrough progress and
+# the exit toward the next story map), both from knowledge.py. New
+# observation space, new policy; nature4 keeps the previous lineage.
+CKPT_DIR=checkpoints/nature5
 ARGS="--steps 100000000 --backbone agent --batch-size 128 --max-steps 0 --coverage-every 250000 --checkpoint-dir $CKPT_DIR"
 MIN_FREE_MB=3000
 LOG=service.log

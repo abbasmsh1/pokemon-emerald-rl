@@ -108,6 +108,33 @@ _OUR_ATTACK = re.compile(r"^(?!wild\b)(?!foe\b)\S+ used \S", re.IGNORECASE)
 _WILD_APPEARED = re.compile(r"\bwild \S+ appeared", re.IGNORECASE)
 
 
+_EVOLVING = re.compile(r"\bis evolving", re.IGNORECASE)
+_EVOLVED = re.compile(r"\bevolved into\b", re.IGNORECASE)
+_SUPER = re.compile(r"super effective", re.IGNORECASE)
+_NOT_VERY = re.compile(r"not very effective", re.IGNORECASE)
+_ANY_MOVE = re.compile(r"\S+ used \S", re.IGNORECASE)
+
+
+def evolving(text: str) -> bool:
+    return bool(_EVOLVING.search(text))
+
+
+def evolved(text: str) -> bool:
+    return bool(_EVOLVED.search(text))
+
+
+def super_effective(text: str) -> bool:
+    return bool(_SUPER.search(text))
+
+
+def not_very_effective(text: str) -> bool:
+    return bool(_NOT_VERY.search(text))
+
+
+def someone_attacked(text: str) -> bool:
+    return bool(_ANY_MOVE.search(text))
+
+
 def wild_encounter(text: str) -> bool:
     return bool(_WILD_APPEARED.search(text))
 

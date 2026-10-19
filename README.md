@@ -116,6 +116,9 @@ flag exists to answer.
 | Running from a battle | -5 |
 | Our Pokemon uses a move | +0.2 per message |
 | A wild battle starts | +1 per encounter, first 5 per map per 50k-step window |
+| Reaching the next map on the walkthrough | +20, once |
+| An evolution completes | +10 |
+| Our move is super effective / not very effective | +0.5 / -0.3 |
 | Damage dealt | +0.5 per enemy HP bar, charged back on healing |
 | Walking toward the nearest never-visited section | +0.1 per section, potential-based |
 | Changing an OPTION setting | -10 |
@@ -265,6 +268,28 @@ the player to a Pokemon Center with a healed party and play continues. Ending
 the episode on it discarded all accumulated exploration, and measurement showed
 every episode was ending that way at ~18,300 steps against a 65,536 cap.
 
+## Game knowledge: the wiki and the walkthrough
+
+`knowledge.py` reads the game's own tables from the ROM, so nothing is
+downloaded and nothing can disagree with the game: species types, each move's
+type and power, the type chart, and the current map's connections. Every
+address was checked against facts not in doubt (Torchic is Fire, Ember is a
+Fire move of power 40, Fire beats Grass x2, Route 103's south edge leads to
+Oldale). Three things are built on it:
+
+- **Evolutions cannot be cancelled.** Pressing B while "X is evolving!" is on
+  screen cancels it in Gen 3; the environment turns that B into a no-op, and
+  a completed evolution pays +10.
+- **Move choice.** The `moves` observation holds each move's effectiveness
+  against the current enemy and its power, so the policy can see which move
+  to pick. "It's super effective!" right after our move pays +0.5, "It's not
+  very effective..." charges 0.3; the enemy's effectiveness lines are ignored.
+- **Walkthrough.** `WAYPOINTS` lists the story's maps to Rustboro, including
+  the return through Oldale after the rival on Route 103. Reaching the next one
+  pays +20 once; skipping ahead or coming back pays nothing. The `guide`
+  observation gives progress and which edge of the current map leads to the
+  next waypoint.
+
 ## The SLM teacher experiment (stopped)
 
 `teacher.py` lets a small instruct model play its own environment from the
@@ -310,6 +335,7 @@ starts farming itself shows up as a curve climbing away from the others.
 | `tilemap.py` | Tile-class window from the map grid; addresses from `tools/probe_tilemap.py` |
 | `battle.py` | Battle state from the battle Pokemon array and the move table |
 | `frontier.py` | Distance to the nearest never-visited section |
+| `knowledge.py` | Species types, move types and power, type chart, map connections, walkthrough |
 | `teacher.py`, `demos.py` | SLM teacher and its demonstration shards (experiment, stopped at its gate) |
 | `text.py` | Follows the game's text printer to the exact on-screen string, no OCR |
 | `coverage.py` | Renders the exploration overlay |

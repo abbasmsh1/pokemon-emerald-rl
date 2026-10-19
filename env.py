@@ -25,7 +25,9 @@ from state import (
 from battle import BATTLE_SIZE
 from frontier import nearest_unvisited_distance
 from tilemap import CLASSES, TILE_H, TILE_W
-from text import our_attack, player_fled, wild_encounter
+from knowledge import DIRECTIONS, WAYPOINTS, Knowledge
+from text import (evolved, evolving, not_very_effective, our_attack, player_fled, someone_attacked,
+                  super_effective, wild_encounter)
 
 SCREEN_SHAPE = (3, 80, 120)
 # 17 game values, then 12 that describe the agent's own situation: the last
@@ -219,6 +221,21 @@ class EmeraldEnv(gym.Env):
     # whiteouts. Experience and levels still pay on a high-water mark, so real
     # leveling is still rewarded; only the encounter bonus itself stops.
     ENCOUNTER_CAP_PER_MAP = 5
+
+    # The "wiki" (knowledge.py, read from the ROM; 2026-10-19, Abbas).
+    # Evolution: B during "X is evolving!" cancels it in Gen 3, so step()
+    # turns that B into a no-op; a completed evolution pays once.
+    EVOLUTION_REWARD = 10.0
+    # Move choice: "It's super effective!" right after OUR move pays, "It's
+    # not very effective..." charges. The observation's "moves" key gives the
+    # effectiveness and power of each move against the current enemy, so the
+    # choice can be made by looking rather than by trial.
+    SUPER_EFFECTIVE_REWARD = 0.5
+    NOT_EFFECTIVE_PENALTY = -0.3
+    # Walkthrough: reaching the NEXT map on knowledge.WAYPOINTS pays once.
+    # Skipping ahead pays nothing (it cannot happen legitimately) and coming
+    # back pays nothing; progress is kept for the life of the process.
+    WAYPOINT_REWARD = 20.0
     # Damage dealt, potential-based on the enemy's HP fraction: a fall is paid,
     # a rise (the enemy healing) is charged at the same rate, and nothing is
     # booked across a battle's start or end, so a new enemy's full bar is not
@@ -418,6 +435,9 @@ class EmeraldEnv(gym.Env):
         self._recent_moves: deque = deque(maxlen=self.LOITER_LIMIT)
         self._frozen_steps = 0
         self._encounters_per_map: dict[tuple[int, int], int] = {}
+        self._waypoint = -1                       # index into WAYPOINTS reached so far
+        self._last_attacker: str | None = None    # "us" / "them": who the next effectiveness line is about
+        self.knowledge = Knowledge(self.gba)
         self._frontier_prev: int | None = None
         self._last_action: int | None = None
         self._moved = False
@@ -439,6 +459,12 @@ class EmeraldEnv(gym.Env):
             # straight from RAM; see tilemap.py and battle.py.
             "tiles": gym.spaces.Box(0, 1, (len(CLASSES), TILE_H, TILE_W), dtype=np.uint8),
             "battle": gym.spaces.Box(0.0, 1.0, (BATTLE_SIZE,), dtype=np.float32),
+            # Per move: effectiveness vs the enemy / 4, then base power / 150.
+            "moves": gym.spaces.Box(0.0, 1.0, (8,), dtype=np.float32),
+            # Walkthrough: progress through WAYPOINTS, a one-hot of the edge
+            # of this map that leads to the next waypoint, and whether there
+            # is such an edge (a door-only route reads all zeros there).
+            "guide": gym.spaces.Box(0.0, 1.0, (6,), dtype=np.float32),
         })
         self._tiles: np.ndarray | None = None
 
@@ -524,6 +550,8 @@ class EmeraldEnv(gym.Env):
             "text": tokenize_text(s["screen_text"]),
             "tiles": self._tiles,
             "battle": np.clip(s["battle"], 0.0, 1.0).astype(np.float32),
+            "moves": self.knowledge.move_features(s.get("our_moves", (0, 0, 0, 0)), s.get("enemy_id", (0, 0))[0]),
+            "guide": self._guide(),
         }
 
     def _refresh_novelty(self) -> None:
@@ -685,6 +713,19 @@ class EmeraldEnv(gym.Env):
             attacking = our_attack(s["screen_text"])
             if attacking and s["screen_text"] != prev["screen_text"]:
                 reward += self._pay("attack", self.ATTACK_REWARD)
+            new_text = s["screen_text"] != prev["screen_text"]
+            if new_text and evolved(s["screen_text"]):
+                reward += self._pay("evolution", self.EVOLUTION_REWARD)
+            if new_text and someone_attacked(s["screen_text"]):
+                self._last_attacker = "us" if our_attack(s["screen_text"]) else "them"
+            if new_text and self._last_attacker == "us":
+                if super_effective(s["screen_text"]):
+                    reward += self._pay("super_effective", self.SUPER_EFFECTIVE_REWARD)
+                elif not_very_effective(s["screen_text"]):
+                    reward += self._pay("not_effective", self.NOT_EFFECTIVE_PENALTY)
+            if (self._waypoint + 1 < len(WAYPOINTS) and map_key == WAYPOINTS[self._waypoint + 1]):
+                self._waypoint += 1
+                reward += self._pay("waypoint", self.WAYPOINT_REWARD)
             if wild_encounter(s["screen_text"]) and s["screen_text"] != prev["screen_text"]:
                 seen_here = self._encounters_per_map.get(map_key, 0)
                 if seen_here < self.ENCOUNTER_CAP_PER_MAP:
@@ -815,10 +856,26 @@ class EmeraldEnv(gym.Env):
         self._frontier_prev = None
         self._last_action = None
         self._moved = False
+        self._last_attacker = None
+        if s["map"] in WAYPOINTS:
+            self._waypoint = max(self._waypoint, WAYPOINTS.index(s["map"]))
         return self._observation(s), self._info(s)
+
+    def _guide(self) -> np.ndarray:
+        g = np.zeros(6, dtype=np.float32)
+        g[0] = max(self._waypoint, 0) / (len(WAYPOINTS) - 1)
+        if self._waypoint + 1 < len(WAYPOINTS):
+            d = self.knowledge.exit_direction(WAYPOINTS[self._waypoint + 1])
+            if d is not None:
+                g[1 + DIRECTIONS.index(d)] = 1.0
+                g[5] = 1.0
+        return g
 
     def step(self, action: int):
         key = self.ACTIONS[action]
+        # Never cancel an evolution: B during "X is evolving!" cancels it.
+        if key == "B" and self._prev is not None and evolving(self._prev.get("screen_text", "")):
+            key = None
         self._last_action = action
         prev_pos = self._prev["pos"] if self._prev is not None else None
         # ponytail: Gen-3 gates dialogue, menus and battle moves on a fresh press
