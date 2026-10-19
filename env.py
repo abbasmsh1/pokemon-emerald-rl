@@ -916,12 +916,30 @@ class EmeraldEnv(gym.Env):
         route = st["route"]
         g[0] = (self._stage + (self._route_idx + 1) / (len(route) + 1)) / len(STORY)
         goal_map, goal_xy = st["goal"]
-        if tuple(s["map"]) == goal_map and goal_xy is not None:
+        here = tuple(s["map"])
+        if here == goal_map and goal_xy is not None:
             d, dist = self.knowledge.point_to(goal_xy, s["pos"])
             door = False
         else:
-            nxt = route[self._route_idx + 1] if self._route_idx + 1 < len(route) else goal_map
-            d, dist, door = self.knowledge.route_to(nxt, s["pos"])
+            # The next stop is computed from where the player IS, not from the
+            # furthest point reached: after wandering back from Route 103 the
+            # old version asked for Route 103 from Route 101 and Littleroot,
+            # which do not touch it, and the guide went blank there.
+            on = [i for i, m in enumerate(route) if m == here]
+            if on:
+                i = max(on)
+                nxt = route[i + 1] if i + 1 < len(route) else goal_map
+                d, dist, door = self.knowledge.route_to(nxt, s["pos"])
+            else:
+                d, dist, door = None, 0, False
+            if d is None:
+                # Off the route (inside a house, a Center, the lab): head for
+                # the nearest door out.
+                exits = [(abs(wx - s["pos"][0]) + abs(wy - s["pos"][1]), wx, wy) for (wx, wy), _dest in self.knowledge.warps()]
+                if exits:
+                    dist, wx, wy = min(exits)
+                    d, _ = self.knowledge.point_to((wx, wy), s["pos"])
+                    door = True
         if d is not None:
             g[1 + DIRECTIONS.index(d)] = 1.0
             g[5] = 1.0

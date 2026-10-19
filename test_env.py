@@ -1875,6 +1875,31 @@ def test_status_moves_cost_a_little():
     print("test_status_moves_cost_a_little PASSED")
 
 
+def test_guide_never_goes_blank_off_the_route():
+    """The 7.1M policy wandered back from Route 103 to Route 101, Littleroot
+    and the houses, and the guide went all zeros there: the next stop was
+    computed from the furthest point reached, Route 103, which those maps do
+    not touch. It must come from where the player is now, and inside a
+    building point at the way out."""
+    env = EmeraldEnv()
+    env.reset()                                   # stage 0 (rival)
+    s = env.state_reader.read()
+    env._route_idx = 3                            # Route 103 already reached
+    real_route, real_warps = env.knowledge.route_to, env.knowledge.warps
+    asked = []
+    env.knowledge.route_to = lambda m, p: (asked.append(m), ("north", 9, False))[1]
+    g = env._guide(dict(s, map=(0, 16), pos=(5, 15)))           # Route 101
+    assert asked and asked[-1] == (0, 10), f"from Route 101 the next stop is Oldale, asked for {asked}"
+    assert g[5] == 1.0 and g[1] == 1.0, g
+    env.knowledge.route_to = lambda m, p: (None, 0, False)
+    env.knowledge.warps = lambda: [((4, 9), (0, 10))]
+    g = env._guide(dict(s, map=(2, 3), pos=(4, 5)))             # an Oldale interior
+    assert g[5] == 1.0 and g[7] == 1.0 and g[2] == 1.0, f"inside a building: point south at the door: {g}"
+    env.knowledge.route_to, env.knowledge.warps = real_route, real_warps
+    env.close()
+    print("test_guide_never_goes_blank_off_the_route PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1953,6 +1978,7 @@ if __name__ == "__main__":
     test_walkthrough_starts_at_the_rival_and_points_at_him()
     test_story_flag_pays_once_and_moves_to_the_next_stage()
     test_stage_route_pays_the_next_map_only_once()
+    test_guide_never_goes_blank_off_the_route()
     test_observation_has_moves_and_guide()
     test_heal_guide_points_to_the_last_center_when_hurt()
     test_first_ever_section_pays_extra_and_survives_refresh()
