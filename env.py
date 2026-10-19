@@ -25,7 +25,7 @@ from state import (
 from battle import BATTLE_SIZE
 from frontier import nearest_unvisited_distance
 from tilemap import CLASSES, TILE_H, TILE_W
-from knowledge import DIRECTIONS, WAYPOINTS, Knowledge
+from knowledge import DIRECTIONS, STORY, Knowledge
 from text import (evolved, evolving, not_very_effective, our_attack, player_fled, someone_attacked,
                   super_effective, wild_encounter)
 
@@ -232,10 +232,12 @@ class EmeraldEnv(gym.Env):
     # choice can be made by looking rather than by trial.
     SUPER_EFFECTIVE_REWARD = 0.5
     NOT_EFFECTIVE_PENALTY = -0.3
-    # Walkthrough: reaching the NEXT map on knowledge.WAYPOINTS pays once.
-    # Skipping ahead pays nothing (it cannot happen legitimately) and coming
-    # back pays nothing; progress is kept for the life of the process.
+    # Walkthrough: the current knowledge.STORY stage's next map pays once;
+    # skipping ahead or coming back pays nothing. Completing a stage (its
+    # event flag rising: rival beaten, Pokedex received, badge) pays
+    # STORY_REWARD once and moves the guide to the next stage.
     WAYPOINT_REWARD = 20.0
+    STORY_REWARD = 30.0
     # Damage dealt, potential-based on the enemy's HP fraction: a fall is paid,
     # a rise (the enemy healing) is charged at the same rate, and nothing is
     # booked across a battle's start or end, so a new enemy's full bar is not
@@ -435,7 +437,8 @@ class EmeraldEnv(gym.Env):
         self._recent_moves: deque = deque(maxlen=self.LOITER_LIMIT)
         self._frozen_steps = 0
         self._encounters_per_map: dict[tuple[int, int], int] = {}
-        self._waypoint = -1                       # index into WAYPOINTS reached so far
+        self._stage = 0                           # index into STORY: the first stage not yet done
+        self._route_idx = -1                      # furthest index reached on that stage's route
         self._last_attacker: str | None = None    # "us" / "them": who the next effectiveness line is about
         self.knowledge = Knowledge(self.gba)
         self._frontier_prev: int | None = None
@@ -461,7 +464,7 @@ class EmeraldEnv(gym.Env):
             "battle": gym.spaces.Box(0.0, 1.0, (BATTLE_SIZE,), dtype=np.float32),
             # Per move: effectiveness vs the enemy / 4, then base power / 150.
             "moves": gym.spaces.Box(0.0, 1.0, (8,), dtype=np.float32),
-            # Walkthrough: progress through WAYPOINTS, a one-hot of the edge
+            # Walkthrough: progress through the STORY stages, a one-hot of the edge
             # of this map that leads to the next waypoint, and whether there
             # is such an edge (a door-only route reads all zeros there).
             "guide": gym.spaces.Box(0.0, 1.0, (8,), dtype=np.float32),
@@ -732,9 +735,16 @@ class EmeraldEnv(gym.Env):
                     reward += self._pay("super_effective", self.SUPER_EFFECTIVE_REWARD)
                 elif not_very_effective(s["screen_text"]):
                     reward += self._pay("not_effective", self.NOT_EFFECTIVE_PENALTY)
-            if (self._waypoint + 1 < len(WAYPOINTS) and map_key == WAYPOINTS[self._waypoint + 1]):
-                self._waypoint += 1
-                reward += self._pay("waypoint", self.WAYPOINT_REWARD)
+            story = s.get("story", ())
+            while self._stage < len(STORY) and self._stage < len(story) and story[self._stage]:
+                reward += self._pay("story", self.STORY_REWARD)
+                self._stage += 1
+                self._route_idx = self._route_position(map_key)
+            if self._stage < len(STORY):
+                route = STORY[self._stage]["route"]
+                if self._route_idx + 1 < len(route) and map_key == route[self._route_idx + 1]:
+                    self._route_idx += 1
+                    reward += self._pay("waypoint", self.WAYPOINT_REWARD)
             if wild_encounter(s["screen_text"]) and s["screen_text"] != prev["screen_text"]:
                 seen_here = self._encounters_per_map.get(map_key, 0)
                 if seen_here < self.ENCOUNTER_CAP_PER_MAP:
@@ -866,25 +876,44 @@ class EmeraldEnv(gym.Env):
         self._last_action = None
         self._moved = False
         self._last_attacker = None
-        if s["map"] in WAYPOINTS:
-            self._waypoint = max(self._waypoint, WAYPOINTS.index(s["map"]))
+        story = s.get("story", ())
+        self._stage = next((i for i, done in enumerate(story) if not done), len(STORY)) if story else 0
+        self._route_idx = self._route_position(s["map"])
         return self._observation(s), self._info(s)
 
     HEAL_BELOW = 0.5           # party HP fraction under which the heal guide switches on
     ROUTE_DIST_SCALE = 64.0
 
+    def _route_position(self, map_key) -> int:
+        """Index of `map_key` on the current stage's route, -1 if off it."""
+        if self._stage >= len(STORY):
+            return -1
+        route = STORY[self._stage]["route"]
+        return max((i for i, m in enumerate(route) if m == tuple(map_key)), default=-1)
+
     def _guide(self, s: dict) -> np.ndarray:
         """[progress, N, S, W, E, has route, distance / 64, through a door]:
-        the way to the next walkthrough map, off an edge or through a warp."""
+        the way to the current story stage's next stop. On the stage's goal
+        map with a goal tile (the rival), it points at the tile."""
         g = np.zeros(8, dtype=np.float32)
-        g[0] = max(self._waypoint, 0) / (len(WAYPOINTS) - 1)
-        if self._waypoint + 1 < len(WAYPOINTS):
-            d, dist, door = self.knowledge.route_to(WAYPOINTS[self._waypoint + 1], s["pos"])
-            if d is not None:
-                g[1 + DIRECTIONS.index(d)] = 1.0
-                g[5] = 1.0
-                g[6] = min(dist / self.ROUTE_DIST_SCALE, 1.0)
-                g[7] = 1.0 if door else 0.0
+        if self._stage >= len(STORY):
+            g[0] = 1.0
+            return g
+        st = STORY[self._stage]
+        route = st["route"]
+        g[0] = (self._stage + (self._route_idx + 1) / (len(route) + 1)) / len(STORY)
+        goal_map, goal_xy = st["goal"]
+        if tuple(s["map"]) == goal_map and goal_xy is not None:
+            d, dist = self.knowledge.point_to(goal_xy, s["pos"])
+            door = False
+        else:
+            nxt = route[self._route_idx + 1] if self._route_idx + 1 < len(route) else goal_map
+            d, dist, door = self.knowledge.route_to(nxt, s["pos"])
+        if d is not None:
+            g[1 + DIRECTIONS.index(d)] = 1.0
+            g[5] = 1.0
+            g[6] = min(dist / self.ROUTE_DIST_SCALE, 1.0)
+            g[7] = 1.0 if door else 0.0
         return g
 
     def _heal(self, s: dict) -> np.ndarray:

@@ -116,7 +116,8 @@ flag exists to answer.
 | Running from a battle | -5 |
 | Our Pokemon uses a move | +0.2 per message |
 | A wild battle starts | +1 per encounter, first 5 per map per 50k-step window |
-| Reaching the next map on the walkthrough | +20, once |
+| Reaching the next map on the current story stage | +20, once |
+| Finishing a story stage (rival, Pokedex, badge) | +30, once |
 | An evolution completes | +10 |
 | Our move is super effective / not very effective | +0.5 / -0.3 |
 | Damage dealt | +0.5 per enemy HP bar, charged back on healing |
@@ -284,12 +285,17 @@ Oldale). Three things are built on it:
   against the current enemy and its power, so the policy can see which move
   to pick. "It's super effective!" right after our move pays +0.5, "It's not
   very effective..." charges 0.3; the enemy's effectiveness lines are ignored.
-- **Walkthrough.** `WAYPOINTS` lists the story's maps to Rustboro, including
-  the return through Oldale after the rival on Route 103. Reaching the next one
-  pays +20 once; skipping ahead or coming back pays nothing. The `guide`
-  observation gives progress, the direction and distance to the next
-  waypoint, and whether the way there is a map edge or a door (from the map's
-  warp list).
+- **Walkthrough.** `STORY` in `knowledge.py` is the story to the first
+  badge as three stages, each gated on the game's own event flag: beat the
+  rival on Route 103 (`0x82`), get the Pokedex from Birch back in Littleroot
+  (`0x861`), then Oldale, Route 102, Petalburg, Route 104 and Rustboro for the
+  badge (`0x867`). A map-order list was not enough: every save on disk starts
+  on Route 103 with the rival unbeaten, so the footprints man in Oldale blocks
+  Route 102, and the first walkthrough pointed every run at that closed road.
+  The current stage's next map pays +20 once, a finished stage pays +30, and
+  the `guide` observation gives progress, the direction and distance to the
+  next stop (on Route 103, the rival's own tile, (10, 3)), and whether the way
+  there is a map edge or a door.
 - **Where to heal.** With party HP under half, the `heal` observation points
   at the last Pokemon Center used (from the save data), on its map at the
   door step, elsewhere at the edge leading there.

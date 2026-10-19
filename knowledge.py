@@ -44,20 +44,26 @@ EVOLUTION_TABLE = 0x0832531C
 EVO_LEVEL = 4
 BACKUP_MAP_LAYOUT = 0x03005DC0     # {s32 w; s32 h; ...}; map size = w - 15, h - 14
 
-# The story's route to the first badge, as map ids. Repeats are real: the
-# rival battle on Route 103 sends the player back through Oldale before the
-# footprints man stops blocking Route 102. Petalburg Woods sits inside Route
-# 104 and the gym inside Rustboro; both are found from there by exploring.
-WAYPOINTS = (
-    (0, 9),    # Littleroot Town
-    (0, 16),   # Route 101
-    (0, 10),   # Oldale Town
-    (0, 18),   # Route 103 (rival)
-    (0, 10),   # Oldale Town again
-    (0, 17),   # Route 102
-    (0, 0),    # Petalburg City
-    (0, 19),   # Route 104
-    (0, 3),    # Rustboro City
+# The story to the first badge, as stages gated on the game's own event
+# flags (pokeemerald include/constants/flags.h). A map-order list was not
+# enough: every save on disk starts on Route 103 with the rival unbeaten, so
+# the footprints man in Oldale blocks Route 102 until the rival battle and the
+# Pokedex from Birch, and a walkthrough that counted "reached Route 103" as
+# done pointed every run at a road the game would not open.
+#   flag      set when the stage is done
+#   route     maps toward the stage's goal, in order
+#   goal      (map, tile) to stand on or talk to; tile None = just reach the map
+# The rival's tile is his object event on Route 103 (hide flag 0x2D3).
+STORY = (
+    {"name": "rival", "flag": 0x82,                        # FLAG_DEFEATED_RIVAL_ROUTE103
+     "route": ((0, 9), (0, 16), (0, 10), (0, 18)),
+     "goal": ((0, 18), (10, 3))},
+    {"name": "pokedex", "flag": 0x861,                     # FLAG_SYS_POKEDEX_GET
+     "route": ((0, 18), (0, 10), (0, 16), (0, 9), (1, 4)),   # back to Birch's lab
+     "goal": ((1, 4), None)},
+    {"name": "badge", "flag": 0x867,                       # FLAG_BADGE01_GET
+     "route": ((0, 9), (0, 16), (0, 10), (0, 17), (0, 0), (0, 19), (0, 3)),
+     "goal": ((0, 3), None)},
 )
 
 

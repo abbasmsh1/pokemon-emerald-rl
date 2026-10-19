@@ -1779,24 +1779,54 @@ def test_effectiveness_messages_pay_only_after_our_move():
     print("test_effectiveness_messages_pay_only_after_our_move PASSED")
 
 
-def test_walkthrough_pays_the_next_waypoint_only_once():
-    from knowledge import WAYPOINTS
+def test_walkthrough_starts_at_the_rival_and_points_at_him():
+    """Every save on disk has the Route 103 rival unbeaten and no Pokedex, so
+    the footprints man in Oldale has blocked Route 102 in every run. The
+    first story stage must be the rival, at (10, 3) on Route 103."""
+    from knowledge import STORY
     env = EmeraldEnv()
-    env.reset()                                   # anchor Route 103 -> progress 3
-    assert WAYPOINTS[env._waypoint] == env.state_reader.read()["map"], env._waypoint
+    obs, _ = env.reset()                          # Route 103 at (9, 21)
+    assert env._stage == 0 and STORY[0]["name"] == "rival", env._stage
+    g = obs["guide"]
+    assert g[1] == 1.0 and g[5] == 1.0, f"guide should point north at the rival: {g}"
+    assert abs(g[6] - 19 / 64) < 1e-6, f"distance to (10, 3) from (9, 21) is 19 tiles, north-dominant: {g}"
+    env.close()
+    print("test_walkthrough_starts_at_the_rival_and_points_at_him PASSED")
+
+
+def test_story_flag_pays_once_and_moves_to_the_next_stage():
+    from knowledge import STORY
+    env = EmeraldEnv()
+    env.reset()
     s = env.state_reader.read()
-    nxt, later = WAYPOINTS[env._waypoint + 1], WAYPOINTS[-1]
     env._prev = dict(s); env._compute_reward(s); env.drain_reward_terms()
+    beaten = dict(s, story=(True, False, False))
+    env._compute_reward(beaten); env._compute_reward(beaten)
+    terms = env.drain_reward_terms()
+    assert terms.get("story", 0) > 10, f"finishing a story stage paid {terms.get('story', 0)}"
+    assert abs(terms.get("story", 0) - EmeraldEnv.STORY_REWARD) < 1e-6, terms
+    assert env._stage == 1 and STORY[1]["name"] == "pokedex"
+    env.close()
+    print("test_story_flag_pays_once_and_moves_to_the_next_stage PASSED")
+
+
+def test_stage_route_pays_the_next_map_only_once():
+    from knowledge import STORY
+    env = EmeraldEnv()
+    env.reset()
+    s = dict(env.state_reader.read(), story=(True, False, False))
+    env._prev = dict(s); env._compute_reward(s); env.drain_reward_terms()   # now stage 1, on Route 103
+    route = STORY[1]["route"]
     def visit(m):
         a = dict(s, map=m, pos=(1, 1)); env._compute_reward(a); env._compute_reward(a)
-    visit(later)                                  # skipping ahead pays nothing
+    visit(route[-1])                              # skipping ahead pays nothing
     assert "waypoint" not in env.drain_reward_terms()
-    visit(nxt)
+    visit(route[1])                               # Oldale: the next stop
     assert abs(env.drain_reward_terms().get("waypoint", 0) - EmeraldEnv.WAYPOINT_REWARD) < 1e-6
-    visit(s["map"]); visit(nxt)                   # coming back pays nothing again
+    visit(route[0]); visit(route[1])              # back and forth pays nothing again
     assert "waypoint" not in env.drain_reward_terms()
     env.close()
-    print("test_walkthrough_pays_the_next_waypoint_only_once PASSED")
+    print("test_stage_route_pays_the_next_map_only_once PASSED")
 
 
 def test_observation_has_moves_and_guide():
@@ -1807,8 +1837,7 @@ def test_observation_has_moves_and_guide():
     assert obs["heal"].shape == (6,) and obs["map_info"].shape == (3,) and obs["evo"].shape == (1,)
     assert obs["map_info"][0] == 1.0, "Route 103 has grass encounters"
     assert abs(obs["evo"][0] - 9 / 50) < 1e-6, f"Torchic Lv7 evolves in 9 levels: {obs['evo']}"
-    assert obs["guide"][2] == 1.0, f"Route 103 -> Oldale is south: {obs['guide']}"   # north,south,west,east at 1..4
-    assert obs["guide"][5] == 1.0
+    assert obs["guide"][5] == 1.0, f"the guide has a route from the anchor: {obs['guide']}"
     b = EmeraldEnv(state_path="battle.state"); ob, _ = b.reset()
     assert ob["moves"][4:].any(), "battle fixture: move powers missing"
     env.close(); b.close()
@@ -1900,7 +1929,9 @@ if __name__ == "__main__":
     test_b_cannot_cancel_an_evolution()
     test_completed_evolution_pays_once()
     test_effectiveness_messages_pay_only_after_our_move()
-    test_walkthrough_pays_the_next_waypoint_only_once()
+    test_walkthrough_starts_at_the_rival_and_points_at_him()
+    test_story_flag_pays_once_and_moves_to_the_next_stage()
+    test_stage_route_pays_the_next_map_only_once()
     test_observation_has_moves_and_guide()
     test_heal_guide_points_to_the_last_center_when_hurt()
     test_first_ever_section_pays_extra_and_survives_refresh()

@@ -6,7 +6,7 @@ _WARMUP = _PyGBA.load("Pokemon - Emerald Version (USA, Europe).gba")
 _WARMUP.core.run_frame()
 
 from env import EmeraldEnv  # noqa: E402
-from knowledge import WAYPOINTS, Knowledge  # noqa: E402
+from knowledge import STORY, Knowledge  # noqa: E402
 
 NORMAL, FLYING, GHOST, FIRE, WATER, GRASS, DARK = 0, 2, 7, 10, 11, 12, 17
 
@@ -58,7 +58,9 @@ def test_move_features_on_the_battle_fixture():
 
 def test_waypoints_and_exit_direction():
     env, k = _k()                                        # anchor: Route 103
-    assert WAYPOINTS[0] == (0, 9) and WAYPOINTS[-1] == (0, 3)
+    assert [st["name"] for st in STORY] == ["rival", "pokedex", "badge"]
+    assert STORY[0]["flag"] == 0x82 and STORY[1]["flag"] == 0x861
+    assert STORY[0]["goal"] == ((0, 18), (10, 3)) and STORY[2]["route"][-1] == (0, 3)
     assert k.exit_direction((0, 10)) == "south", k.exit_direction((0, 10))   # Route 103 -> Oldale
     assert k.exit_direction((0, 3)) is None              # Rustboro is not adjacent to Route 103
     env.close()

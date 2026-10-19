@@ -15,6 +15,7 @@ from pygba import PyGBA
 from text import TextReader
 from tilemap import TileMapReader
 from battle import BATTLE_SIZE, BattleReader
+from knowledge import STORY
 from pygba.game_wrappers.utils.emerald_utils import (
     ADRESSES,
     SaveBlock2_spec,
@@ -104,6 +105,7 @@ class GameState:
                 "party_exp": 0,
                 "lead": (0, 0),
                 "heal_location": None,
+                "story": (False, False, False),
                 "screen_text": "",
                 "party_hp_frac": 0.0,
                 "money": 0,
@@ -177,6 +179,8 @@ class GameState:
             # Where a whiteout returns the player: the last Pokemon Center used.
             "heal_location": ((sb1["lastHealLocation"]["mapGroup"], sb1["lastHealLocation"]["mapNum"]),
                               (sb1["lastHealLocation"]["x"], sb1["lastHealLocation"]["y"])),
+            # Story flags, one per knowledge.STORY stage, in order.
+            "story": tuple(_get_flag(flags, st["flag"]) for st in STORY),
             "screen_text": self.text.read(),
             "party_hp_frac": hp_frac,
             "options": options,
