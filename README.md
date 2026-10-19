@@ -265,6 +265,25 @@ the player to a Pokemon Center with a healed party and play continues. Ending
 the episode on it discarded all accumulated exploration, and measurement showed
 every episode was ending that way at ~18,300 steps against a 65,536 cap.
 
+## The SLM teacher experiment (stopped)
+
+`teacher.py` lets a small instruct model play its own environment from the
+exact game state and record demonstrations (`demos.py`) for the policy to
+imitate. It was built as far as its gate and stopped there: over 20,000 steps
+Qwen2.5-0.5B-Instruct, scoring one token per button at 16-18 decisions a
+second, explored less than a random walk (249 tiles against 649), fought less
+(10 attacks against 12), and sat an order of magnitude below the 2.2M-step PPO
+policy (+8.2 reward per 1k, 110 attacks, 163 wins). A student imitating it
+would have got worse. The infrastructure stays: `tools/measure_teacher.py` is
+the gate for any other model, `watch.py --teacher` shows one playing, and
+`deploy/pokemon-teacher.service` runs one as a service. Design and ledger of
+the two prompt rework rounds: `docs/superpowers/specs/2026-10-18-slm-teacher-design.md`.
+
+The experiment did find one defect in the main reward: the wild-encounter
+detector was anchored to the start of the text, but the printer delivers the
+line as `": 0     Wild WINGULL appeared!"`, so it had never matched and the
+encounter reward had never paid.
+
 ## Reading whether it is learning
 
 `rollout/ep_rew_mean` is not usable on this run. With `--max-steps 0` an
@@ -291,6 +310,7 @@ starts farming itself shows up as a curve climbing away from the others.
 | `tilemap.py` | Tile-class window from the map grid; addresses from `tools/probe_tilemap.py` |
 | `battle.py` | Battle state from the battle Pokemon array and the move table |
 | `frontier.py` | Distance to the nearest never-visited section |
+| `teacher.py`, `demos.py` | SLM teacher and its demonstration shards (experiment, stopped at its gate) |
 | `text.py` | Follows the game's text printer to the exact on-screen string, no OCR |
 | `coverage.py` | Renders the exploration overlay |
 | `stats.py` | Decodes a savestate into readable progress |

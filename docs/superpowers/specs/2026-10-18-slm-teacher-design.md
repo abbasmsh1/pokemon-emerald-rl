@@ -1,6 +1,15 @@
 # SLM teacher: a language model plays, the vision model and the policy learn from it
 
-Date: 2026-10-18. Status: approved by Abbas 2026-10-18 ("approved, build it"); builder-check answers recorded in the plan's Global Constraints. Supersedes the 2026-10-04 "SLM
+Date: 2026-10-18. Status: STOPPED AT THE STAGE 0 GATE on 2026-10-19 after the two
+prompt rework rounds the plan allowed. Qwen2.5-0.5B-Instruct scoring one token
+per button measured -6.76 reward per 1k, 249 tiles and 10 attacks over 20,000
+steps against a random walk's 649 tiles and 12 attacks, and against the
+2.2M-step PPO policy's +8.21, 110 attacks and 163 wins. The student would have
+learned from something worse than itself, so Tasks 5 and 7 were not built.
+Tasks 1-4 and 6 (shards, prompt, scorer, loop and service unit, measurement
+tool, viewer) are merged and stay usable with any model;
+`tools/measure_teacher.py` is the gate for a better one. Decision by Abbas
+("go with what you think is better") and the executor, 2026-10-19. Supersedes the 2026-10-04 "SLM
 text advisor" design, whose latency premise (0.3 s per answer) was measured
 today to be twenty times too pessimistic.
 
