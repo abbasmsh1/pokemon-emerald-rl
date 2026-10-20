@@ -8,10 +8,10 @@ demos_human/. Usage:
     python play.py                 # starts where training starts (Route 103)
     python play.py --state X.state # or from any savestate
 
-Keys: arrows walk, Z = A, X = B, Enter = Start, nothing held = wait.
-Close the window or press Esc to stop; every step is saved, including the
-last few. Hold a key rather than tapping it: the game reads one button per
-step, about 2.5 steps a second.
+Keys: arrows walk (hold to keep walking), Z = A, X = B, Enter = Start (one
+press each), nothing held = wait. Close the window or press Esc to stop;
+every step is saved, including the last few. The game runs at its real speed,
+about 2.5 agent steps a second.
 """
 
 # A core must run a frame before torch is imported (see README); play.py
@@ -97,16 +97,29 @@ def main() -> None:
     font = pygame.font.Font(None, 22)
     clock = pygame.time.Clock()
     start, total = True, 0.0
+    # A, B and Start count once per key press, queued so a quick tap between
+    # steps is not lost; arrows count every step they are held, i.e. walking.
+    # Each step is paced to real game speed (frameskip frames at 60 fps), so
+    # holding an arrow walks at the game's own pace rather than racing.
+    press_keys = {pygame.K_z: "z", pygame.K_x: "x", pygame.K_RETURN: "return"}
+    arrow_keys = {k: n for k, n in names.items() if k not in press_keys}
+    pending: list[str] = []
+    steps_per_second = 60.0 / env.frameskip
     try:
         running = True
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                     running = False
+                elif event.type == pygame.KEYDOWN and event.key in press_keys:
+                    pending.append(press_keys[event.key])
             if not running:
                 break
-            held = pygame.key.get_pressed()
-            action = keys_to_action({n for k, n in names.items() if held[k]})
+            if pending:
+                action = keys_to_action({pending.pop(0)})
+            else:
+                held = pygame.key.get_pressed()
+                action = keys_to_action({n for k, n in arrow_keys.items() if held[k]})
             nxt, reward, terminated, truncated, info = env.step(action)
             rec.add(obs, action, reward, start)
             obs, start = nxt, False
@@ -120,10 +133,10 @@ def main() -> None:
             screen.fill((0, 0, 0))
             screen.blit(surf, (0, 0))
             line = (f"recorded {rec.steps} steps   pressed {env.ACTIONS[action] or 'none'}   "
-                    f"reward {total:.1f}   arrows / Z=A / X=B / Enter=Start / Esc=stop")
+                    f"reward {total:.1f}   hold arrows to walk / Z=A / X=B / Enter=Start / Esc=stop")
             screen.blit(font.render(line, True, (230, 230, 230)), (6, h + 4))
             pygame.display.flip()
-            clock.tick(60)
+            clock.tick(steps_per_second)
     finally:
         rec.close()
         pygame.quit()
