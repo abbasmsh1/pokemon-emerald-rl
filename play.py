@@ -82,6 +82,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state", default=None, help="savestate to start from (default: where training starts)")
     parser.add_argument("--demo-dir", default=str(DEMO_DIR))
+    parser.add_argument("--speed", type=float, default=1.25,
+                        help="game speed relative to real time (1.25 = 25%% faster); "
+                             "only the pace of play changes, each step is still one agent step")
     args = parser.parse_args()
 
     env = EmeraldEnv(render_mode="rgb_array", state_path=args.state, max_steps=0)
@@ -104,7 +107,7 @@ def main() -> None:
     press_keys = {pygame.K_z: "z", pygame.K_x: "x", pygame.K_RETURN: "return"}
     arrow_keys = {k: n for k, n in names.items() if k not in press_keys}
     pending: list[str] = []
-    steps_per_second = 60.0 / env.frameskip
+    steps_per_second = 60.0 / env.frameskip * args.speed
     try:
         running = True
         while running:
