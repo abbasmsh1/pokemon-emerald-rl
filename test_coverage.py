@@ -1,5 +1,8 @@
 """Assertion-based checks for the coverage overlay. No framework."""
 
+import os as _os
+_os.environ["EMERALD_START"] = "route103.state"   # tests start where they were written for: Route 103
+
 import tempfile
 from pathlib import Path
 

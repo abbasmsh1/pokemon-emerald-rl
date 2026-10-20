@@ -5,6 +5,9 @@ from pygba import PyGBA as _PyGBA
 _WARMUP = _PyGBA.load("Pokemon - Emerald Version (USA, Europe).gba")
 _WARMUP.core.run_frame()
 
+import os as _os
+_os.environ["EMERALD_START"] = "route103.state"   # tests start where they were written for: Route 103
+
 import numpy as np  # noqa: E402
 
 from battle import move_name  # noqa: E402

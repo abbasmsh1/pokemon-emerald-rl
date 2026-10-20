@@ -90,6 +90,12 @@ def latest_progress_state(save_dir: str = "checkpoints") -> str | None:
     construction, so a new high written mid-run does not move the target
     underneath a live worker.
     """
+    # A state saved from human play (play.py, F5 or a verified replay) is
+    # further along the story than anything the agent has reached: the newest
+    # one wins outright (2026-10-20, Abbas).
+    human = sorted(Path(save_dir).glob("human_*.state"))
+    if human:
+        return str(human[-1])
     best = None
     for path in Path(save_dir).glob("furthest_*maps_*.state"):
         # furthest_<n>maps_<mapGroup>_<mapNum>.state
@@ -412,7 +418,9 @@ class EmeraldEnv(gym.Env):
         # None means "furthest progress so far", falling back to the intro
         # savestate on a fresh clone with no progress recorded yet.
         if state_path is None:
-            state_path = latest_progress_state() or "boot.state"
+            # EMERALD_START pins the start for tests, which must not depend on
+            # what training has written to checkpoints/.
+            state_path = os.environ.get("EMERALD_START") or latest_progress_state() or "boot.state"
         self.state_path = state_path
         with open(state_path, "rb") as f:
             self._boot_state = f.read()

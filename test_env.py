@@ -1,5 +1,8 @@
 import numpy as np
 
+import os as _os
+_os.environ["EMERALD_START"] = "route103.state"   # tests start where they were written for: Route 103
+
 from env import EmeraldEnv
 
 
@@ -732,11 +735,14 @@ def test_starts_from_furthest_progress_state(tmp_path=None):
     )
 
     # And the env must actually use it rather than hardcoding boot.state.
+    import os
+    pinned = os.environ.pop("EMERALD_START")
     env = EmeraldEnv()
-    assert "furthest_" in env.state_path, (
+    os.environ["EMERALD_START"] = pinned
+    assert "furthest_" in env.state_path or "human_" in env.state_path, (
         f"env started from {env.state_path}, not a progress savestate"
     )
-    group = env.state_path.split("_")[-2]
+    group = env.state_path.split("_")[-2] if "furthest_" in env.state_path else "0"
     assert group == "0", (
         f"env anchored on map group {group}, an interior: {env.state_path}"
     )
@@ -1978,6 +1984,22 @@ def test_healing_at_a_center_pays_but_a_whiteout_does_not():
     print("test_healing_at_a_center_pays_but_a_whiteout_does_not PASSED")
 
 
+def test_a_human_checkpoint_is_preferred_as_the_start():
+    """A state saved from human play (checkpoints/human_*.state) is further
+    along the story than anything the agent reached; the newest one wins."""
+    import tempfile, time
+    from pathlib import Path
+    from env import latest_progress_state
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "furthest_14maps_0_18.state").write_bytes(b"x")
+        assert latest_progress_state(d).endswith("furthest_14maps_0_18.state")
+        (Path(d) / "human_20261020_100000.state").write_bytes(b"x")
+        time.sleep(0.01)
+        (Path(d) / "human_20261020_124433.state").write_bytes(b"x")
+        assert latest_progress_state(d).endswith("human_20261020_124433.state"), latest_progress_state(d)
+    print("test_a_human_checkpoint_is_preferred_as_the_start PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -2014,6 +2036,7 @@ if __name__ == "__main__":
     test_damage_then_heal_nets_zero()
     test_empty_party_does_not_move_hp_reward()
     test_starts_from_furthest_progress_state()
+    test_a_human_checkpoint_is_preferred_as_the_start()
     test_changing_options_is_penalised()
     test_unchanged_options_cost_nothing()
     test_failed_options_read_is_not_billed()

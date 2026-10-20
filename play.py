@@ -46,6 +46,39 @@ def keys_to_action(pressed: set[str]) -> int:
     return EmeraldEnv.ACTIONS.index(None)
 
 
+# A held arrow repeats only after this long, like keyboard auto-repeat: a
+# tap is exactly one step (one cursor move in a menu), holding walks. Arrows
+# that repeated on every step held skipped POKEMON in the battle menu.
+REPEAT_DELAY = 0.35
+ARROWS = ("up", "down", "left", "right")
+
+
+class InputQueue:
+    """Key presses in, one agent action per step out."""
+
+    def __init__(self):
+        self.pending: list[str] = []
+        self.down_at: dict[str, float] = {}
+
+    def keydown(self, name: str, t: float) -> None:
+        self.pending.append(name)
+        if name in ARROWS:
+            self.down_at[name] = t
+
+    def next_action(self, now: float, held: set[str], repeat: bool = True) -> int:
+        """repeat=False (in a battle): a held arrow never repeats, so a slow
+        press in the battle menu is still one cursor move."""
+        for name in list(self.down_at):
+            if name not in held:
+                del self.down_at[name]
+        if self.pending:
+            return keys_to_action({self.pending.pop(0)})
+        if not repeat:
+            return keys_to_action(set())
+        repeating = {n for n, t in self.down_at.items() if now - t >= REPEAT_DELAY}
+        return keys_to_action(repeating)
+
+
 class Recorder:
     """Buffers (observation, action, reward, episode start) and writes a
     shard every `shard_steps`, and the remainder on close."""
@@ -104,9 +137,14 @@ def main() -> None:
     # steps is not lost; arrows count every step they are held, i.e. walking.
     # Each step is paced to real game speed (frameskip frames at 60 fps), so
     # holding an arrow walks at the game's own pace rather than racing.
-    press_keys = {pygame.K_z: "z", pygame.K_x: "x", pygame.K_RETURN: "return"}
-    arrow_keys = {k: n for k, n in names.items() if k not in press_keys}
-    pending: list[str] = []
+    import time
+
+    from mgba._pylib import ffi
+    from env import suppress_stdout
+
+    from battle import BattleReader
+    battle = BattleReader(env.gba)
+    q = InputQueue()
     steps_per_second = 60.0 / env.frameskip * args.speed
     try:
         running = True
@@ -114,15 +152,19 @@ def main() -> None:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                     running = False
-                elif event.type == pygame.KEYDOWN and event.key in press_keys:
-                    pending.append(press_keys[event.key])
+                elif event.type == pygame.KEYDOWN and event.key in names:
+                    q.keydown(names[event.key], time.monotonic())
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_F5:
+                    # Save the exact game state as a checkpoint to start from later.
+                    path = Path("checkpoints") / f"human_{time.strftime('%Y%m%d_%H%M%S')}.state"
+                    with suppress_stdout():
+                        path.write_bytes(bytes(ffi.buffer(env.gba.core.save_raw_state())))
+                    print(f"saved state -> {path}", flush=True)
             if not running:
                 break
-            if pending:
-                action = keys_to_action({pending.pop(0)})
-            else:
-                held = pygame.key.get_pressed()
-                action = keys_to_action({n for k, n in arrow_keys.items() if held[k]})
+            pressed = pygame.key.get_pressed()
+            action = q.next_action(time.monotonic(), {n for k, n in names.items() if pressed[k]},
+                                   repeat=not battle.in_battle())
             nxt, reward, terminated, truncated, info = env.step(action)
             rec.add(obs, action, reward, start)
             obs, start = nxt, False
@@ -136,7 +178,7 @@ def main() -> None:
             screen.fill((0, 0, 0))
             screen.blit(surf, (0, 0))
             line = (f"recorded {rec.steps} steps   pressed {env.ACTIONS[action] or 'none'}   "
-                    f"reward {total:.1f}   hold arrows to walk / Z=A / X=B / Enter=Start / Esc=stop")
+                    f"reward {total:.1f}   tap arrows to move once (no repeat in battle), hold to walk / Z=A / X=B / Enter=Start / F5=save state / Esc=stop")
             screen.blit(font.render(line, True, (230, 230, 230)), (6, h + 4))
             pygame.display.flip()
             clock.tick(steps_per_second)

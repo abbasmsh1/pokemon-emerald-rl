@@ -1,5 +1,8 @@
 """Checks for the on-screen text reader. No framework."""
 
+import os as _os
+_os.environ["EMERALD_START"] = "route103.state"   # tests start where they were written for: Route 103
+
 from pathlib import Path
 
 from pygba import PyGBA
