@@ -94,10 +94,26 @@ def test_load_recent_on_empty_dir_is_none():
     print("test_load_recent_on_empty_dir_is_none PASSED")
 
 
+def test_shards_keep_every_observation_key():
+    """The environment grew moves/guide/heal/map_info/evo after the shard
+    format was fixed; a shard must keep whatever observation it is given."""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        arrays = _fake(16)
+        arrays["guide"] = np.ones((16, 8), dtype=np.float32)
+        write_shard(tmp, arrays)
+        data = load_recent(tmp)
+        assert "guide" in data and data["guide"].shape == (16, 8)
+        obs_t, actions, obs_t1 = sample_pairs(data, 4, np.random.default_rng(0))
+        assert "guide" in obs_t and "action" not in obs_t and "shard_id" not in obs_t
+    print("test_shards_keep_every_observation_key PASSED")
+
+
 if __name__ == "__main__":
     test_shard_round_trip()
     test_partial_writes_are_ignored()
     test_ring_keeps_the_newest()
     test_sample_pairs_never_cross_episode_or_shard_boundaries()
     test_load_recent_on_empty_dir_is_none()
+    test_shards_keep_every_observation_key()
     print("\nall demos tests passed")

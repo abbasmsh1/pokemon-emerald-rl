@@ -93,9 +93,64 @@ def test_step_wait_raises_instead_of_hanging():
     print("test_step_wait_raises_instead_of_hanging PASSED")
 
 
+
+def _ppo(env):
+    from stable_baselines3 import PPO
+    from stable_baselines3.common.logger import configure
+    model = PPO("MultiInputPolicy", env, n_steps=64, batch_size=32, device="cpu",
+                policy_kwargs={"features_extractor_class": AgentExtractor, "features_extractor_kwargs": {"n_actions": 8}})
+    model.set_logger(configure(None, []))     # learn() would set one; these tests call callbacks directly
+    return model
+
+
+def test_imitation_is_a_noop_without_recordings():
+    import tempfile
+    from train import ImitationCallback
+    venv = DummyVecEnv([lambda: EmeraldEnv()])
+    model = _ppo(venv)
+    with tempfile.TemporaryDirectory() as d:
+        cb = ImitationCallback(demo_dir=d)
+        cb.init_callback(model)
+        before = [p.detach().clone() for p in model.policy.parameters()]
+        cb._on_rollout_end()
+        assert all(torch.equal(a, b) for a, b in zip(before, model.policy.parameters())), "changed weights with no recordings"
+    venv.close()
+    print("test_imitation_is_a_noop_without_recordings PASSED")
+
+
+def test_imitation_learns_a_constant_player():
+    """Recordings where the player always presses 'right': the policy's
+    choice on those observations must move to 'right'."""
+    import tempfile
+    from pathlib import Path
+    from play import Recorder
+    from train import ImitationCallback
+    env = EmeraldEnv(); obs, _ = env.reset()
+    right = EmeraldEnv.ACTIONS.index("right")
+    with tempfile.TemporaryDirectory() as d:
+        rec = Recorder(Path(d), shard_steps=10_000)
+        for i in range(256):
+            nxt, r, *_ = env.step([1, 2, 3, 4][i % 4])
+            rec.add(obs, right, r, i == 0)
+            obs = nxt
+        rec.close()
+        venv = DummyVecEnv([lambda: EmeraldEnv()])
+        model = _ppo(venv)
+        cb = ImitationCallback(demo_dir=d, batch=128, steps=8, lr=1e-3)
+        cb.init_callback(model)
+        for _ in range(12):
+            cb._on_rollout_end()
+        assert cb.last_acc > 0.9, f"imitation accuracy {cb.last_acc:.2f} on a constant player"
+        venv.close()
+    env.close()
+    print(f"test_imitation_learns_a_constant_player PASSED (acc {cb.last_acc:.2f})")
+
+
 if __name__ == "__main__":
     test_step_wait_raises_instead_of_hanging()
     test_unattached_wrapper_changes_nothing()
     test_curiosity_pays_a_bounded_positive_bonus()
     test_curiosity_fades_as_the_forward_model_learns()
+    test_imitation_is_a_noop_without_recordings()
+    test_imitation_learns_a_constant_player()
     print("\nall train tests passed")

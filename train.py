@@ -211,6 +211,68 @@ class CuriosityWrapper(VecEnvWrapper):
         return total
 
 
+class ImitationCallback(BaseCallback):
+    """Fits the policy to recorded human play (play.py -> demos_human/) after
+    each PPO update, alongside PPO's own reward.
+
+    Cross-entropy between the policy's action distribution and the button the
+    player pressed, on recorded observations, at a small weight so PPO's
+    reward can overrule a demonstration where it disagrees. A no-op when no
+    recordings exist, so it can stay registered permanently. Re-reads the
+    newest shards every `reload_every` rollouts, so new recordings are picked
+    up without a restart.
+
+    aux/imitation_acc is the share of recorded buttons the policy would now
+    press itself on those observations; chance is 1/8.
+    """
+
+    def __init__(self, demo_dir="demos_human", batch=256, steps=4, lr=2.5e-4,
+                 weight=1.0, reload_every=25, max_shards=50):
+        super().__init__()
+        self.demo_dir, self.batch, self.steps, self.lr = demo_dir, batch, steps, lr
+        self.weight, self.reload_every, self.max_shards = weight, reload_every, max_shards
+        self._data, self._since_load, self._opt = None, 10**9, None
+        self.last_acc = 0.0
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        import numpy as np
+        import torch
+        import torch.nn.functional as F
+
+        from demos import load_recent
+
+        self._since_load += 1
+        if self._since_load >= self.reload_every:
+            self._data, self._since_load = load_recent(Path(self.demo_dir), self.max_shards), 0
+        if self._data is None or len(self._data["action"]) == 0:
+            return
+        policy = self.model.policy
+        keys = [k for k in policy.observation_space.spaces if k in self._data]
+        if len(keys) != len(policy.observation_space.spaces):
+            return                      # recordings from an older observation space
+        if self._opt is None:
+            self._opt = torch.optim.Adam(policy.parameters(), lr=self.lr)
+        rng = np.random.default_rng(self.num_timesteps)
+        idx = rng.choice(len(self._data["action"]), size=min(self.batch, len(self._data["action"])), replace=False)
+        obs, _ = policy.obs_to_tensor({k: self._data[k][idx] for k in keys})
+        target = torch.as_tensor(self._data["action"][idx], device=policy.device).long()
+        policy.set_training_mode(True)
+        for _ in range(self.steps):
+            logits = policy.get_distribution(obs).distribution.logits
+            loss = self.weight * F.cross_entropy(logits, target)
+            self._opt.zero_grad()
+            loss.backward()
+            self._opt.step()
+        with torch.no_grad():
+            self.last_acc = (policy.get_distribution(obs).distribution.logits.argmax(1) == target).float().mean().item()
+        self.logger.record("aux/imitation_loss", loss.item())
+        self.logger.record("aux/imitation_acc", self.last_acc)
+        self.logger.record("aux/imitation_steps", float(len(self._data["action"])))
+
+
 class InverseDynamicsCallback(BaseCallback):
     """Trains the shared CNN to predict the button pressed between consecutive
     screens, from pairs in the rollout buffer, after each PPO update.
@@ -427,6 +489,7 @@ def main():
     # returns, and the wrapper pays nothing until attached. Registered
     # unconditionally so a resume does not need the flag.
     callbacks.append(InverseDynamicsCallback())
+    callbacks.append(ImitationCallback())   # no-op until play.py has recorded something
     if hasattr(model.policy.features_extractor, "forward_error"):
         curiosity.attach(model.policy.features_extractor, model.device)
 

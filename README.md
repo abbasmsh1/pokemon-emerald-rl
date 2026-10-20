@@ -308,6 +308,20 @@ Oldale). Three things are built on it:
 - **Evolution.** `evo` is the number of levels until the lead Pokemon
   evolves, from the evolution table.
 
+## Learning from your own play
+
+`python play.py` opens the game and records you playing: arrows walk, Z is A,
+X is B, Enter is Start, Esc stops. It runs the same environment, observation
+and step as training (one button per 24 frames, about 2.5 a second; hold a key
+rather than tap it), so every step is an exact (observation, button) pair.
+Recordings go to `demos_human/`, every step saved including the last few.
+
+Training's `ImitationCallback` fits the policy to those recordings after each
+PPO update, alongside PPO's own reward, and re-reads the folder every 25
+rollouts, so a new session is picked up without restarting training.
+`aux/imitation_acc` is the share of your buttons the policy now picks itself
+on the recorded screens (chance is 1/8).
+
 ## The SLM teacher experiment (stopped)
 
 `teacher.py` lets a small instruct model play its own environment from the
@@ -354,6 +368,7 @@ starts farming itself shows up as a curve climbing away from the others.
 | `battle.py` | Battle state from the battle Pokemon array and the move table |
 | `frontier.py` | Distance to the nearest never-visited section |
 | `knowledge.py` | Species types, move types and power, type chart, map connections and warps, wild encounter levels, evolutions, walkthrough |
+| `play.py` | Play yourself and record it for imitation |
 | `teacher.py`, `demos.py` | SLM teacher and its demonstration shards (experiment, stopped at its gate) |
 | `text.py` | Follows the game's text printer to the exact on-screen string, no OCR |
 | `coverage.py` | Renders the exploration overlay |
