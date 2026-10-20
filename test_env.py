@@ -1917,6 +1917,27 @@ def test_houses_are_not_new_maps():
     print("test_houses_are_not_new_maps PASSED")
 
 
+def test_sections_inside_buildings_pay_nothing():
+    """Same reason as new maps: building sections paid +1.5 each (section and
+    first-ever section) and the policy farmed houses for them. Outdoor
+    sections still pay; indoor ones are still recorded for the frontier."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = dict(s); env._compute_reward(s); env.drain_reward_terms()
+    for m in ((1, 2), (2, 4)):
+        for pos in ((1, 1), (12, 12)):
+            a = dict(s, map=m, pos=pos); env._compute_reward(a); env._compute_reward(a)
+    terms = env.drain_reward_terms()
+    assert "new_section" not in terms and "first_section" not in terms, f"indoor sections paid: {terms}"
+    assert any(k[:2] == (1, 2) for k in env._sections_ever), "indoor sections must still be recorded"
+    a = dict(s, map=(0, 17), pos=(3, 3)); env._compute_reward(a); env._compute_reward(a)
+    terms = env.drain_reward_terms()
+    assert terms.get("new_section", 0) > 0.1 and terms.get("first_section", 0) > 0.1, terms
+    env.close()
+    print("test_sections_inside_buildings_pay_nothing PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1997,6 +2018,7 @@ if __name__ == "__main__":
     test_stage_route_pays_the_next_map_only_once()
     test_guide_never_goes_blank_off_the_route()
     test_houses_are_not_new_maps()
+    test_sections_inside_buildings_pay_nothing()
     test_observation_has_moves_and_guide()
     test_heal_guide_points_to_the_last_center_when_hurt()
     test_first_ever_section_pays_extra_and_survives_refresh()

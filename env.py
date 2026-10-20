@@ -653,12 +653,17 @@ class EmeraldEnv(gym.Env):
             s["pos"][0] // self.SECTION_SIZE,
             s["pos"][1] // self.SECTION_SIZE,
         )
+        # Sections are recorded everywhere (the frontier uses them) but pay
+        # only outdoors, like new maps (2026-10-20, Abbas).
+        outdoors = map_key[0] == 0
         if section_key not in self._visited_sections:
             self._visited_sections.add(section_key)
-            reward += self._pay("new_section", self.NEW_SECTION_REWARD)
+            if outdoors:
+                reward += self._pay("new_section", self.NEW_SECTION_REWARD)
             if section_key not in self._sections_ever:
                 self._sections_ever.add(section_key)
-                reward += self._pay("first_section", self.FIRST_SECTION_REWARD)
+                if outdoors:
+                    reward += self._pay("first_section", self.FIRST_SECTION_REWARD)
 
         # Frontier shaping; see FRONTIER_REWARD. The current section was added
         # to _sections_ever just above, so the distance is never 0 here.
