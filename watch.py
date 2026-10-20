@@ -60,7 +60,9 @@ def main():
     if args.checkpoint is None and not (args.random or args.teacher):
         parser.error("a checkpoint is required unless --random or --teacher is given")
 
-    env = EmeraldEnv(render_mode="rgb_array")      # the mGBA core exists before the teacher's torch import
+    # max_steps=0, as in training: with the env default (16,384) the window
+    # jumped back to the start every 16,384 steps (2026-10-20, Abbas).
+    env = EmeraldEnv(render_mode="rgb_array", max_steps=0)   # the mGBA core exists before the teacher's torch import
     teacher = None
     if args.teacher:
         from teacher import ACTION_WORDS, build_prompt, choose_action, frontier_direction, load_model, summarise_tiles
