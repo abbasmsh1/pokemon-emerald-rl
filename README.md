@@ -119,6 +119,7 @@ flag exists to answer.
 | Reaching the next map on the current story stage | +20, once |
 | Finishing a story stage (rival, Pokedex, badge) | +30, once |
 | An evolution completes | +10 |
+| Healing at a Pokemon Center from under 20% HP | +5 |
 | Our move is super effective / not very effective | +0.5 / -0.3 |
 | Damage dealt | +0.5 per enemy HP bar, charged back on healing |
 | Walking toward the nearest never-visited section | +0.1 per section, potential-based |
@@ -296,9 +297,12 @@ Oldale). Three things are built on it:
   the `guide` observation gives progress, the direction and distance to the
   next stop (on Route 103, the rival's own tile, (10, 3)), and whether the way
   there is a map edge or a door.
-- **Where to heal.** With party HP under half, the `heal` observation points
-  at the last Pokemon Center used (from the save data), on its map at the
-  door step, elsewhere at the edge leading there.
+- **Where to heal.** With party HP under 20%, the `heal` observation leads to
+  the nurse at the last Pokemon Center used (from the save data): in its town
+  to the Center's door (the warp nearest the saved heal spot), inside to the
+  counter two tiles below the nurse (NPC graphic 58). Healing from under 20%
+  to full there pays +5 once per heal; the free heal a whiteout gives does
+  not count.
 - **How dangerous this map is.** `map_info` compares this map's wild
   encounter levels (from the ROM's encounter tables) with ours.
 - **Evolution.** `evo` is the number of levels until the lead Pokemon

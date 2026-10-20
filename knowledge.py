@@ -218,6 +218,30 @@ class Knowledge:
         return max(min(need) - level, 0) if need else None
 
 
+NURSE_GFX = 58          # OBJ_EVENT_GFX_NURSE; Oldale's Center has her at (7, 2)
+
+
+def _nurse_tile(self) -> tuple[int, int] | None:
+    """The tile the player talks to the nurse from, two below her across the
+    counter, if a nurse stands on the current map (i.e. this is a Center)."""
+    ev = self.gba.read_u32(MAP_HEADER + 0x04)
+    if not 0x08000000 <= ev < 0x0A000000:
+        return None
+    head = self._rom(ev, 12)
+    count, ptr = head[0], struct.unpack_from("<I", head, 4)[0]
+    if not 0x08000000 <= ptr < 0x0A000000 or count > 64:
+        return None
+    raw = self._rom(ptr, 24 * count)
+    for k in range(count):
+        if raw[24 * k + 1] == NURSE_GFX:
+            x, y = struct.unpack_from("<hh", raw, 24 * k + 4)
+            return x, y + 2
+    return None
+
+
+Knowledge.nurse_tile = _nurse_tile
+
+
 def compass(dx: int, dy: int) -> str | None:
     if dx == 0 and dy == 0:
         return None

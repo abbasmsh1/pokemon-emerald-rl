@@ -248,6 +248,12 @@ class EmeraldEnv(gym.Env):
     # STORY_REWARD once and moves the guide to the next stage.
     WAYPOINT_REWARD = 20.0
     STORY_REWARD = 30.0
+    # Healing at a Pokemon Center: party HP from under HEAL_BELOW to full,
+    # standing in a Center (the nurse is on the map). Not paid for the free
+    # heal a whiteout gives: that lands in a Center too, so a heal within
+    # WHITEOUT_GRACE steps of a whiteout does not count.
+    CENTER_HEAL_REWARD = 5.0
+    WHITEOUT_GRACE = 600
     # Damage dealt, potential-based on the enemy's HP fraction: a fall is paid,
     # a rise (the enemy healing) is charged at the same rate, and nothing is
     # booked across a battle's start or end, so a new enemy's full bar is not
@@ -448,6 +454,7 @@ class EmeraldEnv(gym.Env):
         self._frozen_steps = 0
         self._encounters_per_map: dict[tuple[int, int], int] = {}
         self._stage = 0                           # index into STORY: the first stage not yet done
+        self._since_whiteout = 10**9              # steps since the last whiteout
         self._route_idx = -1                      # furthest index reached on that stage's route
         self._last_attacker: str | None = None    # "us" / "them": who the next effectiveness line is about
         self.knowledge = Knowledge(self.gba)
@@ -796,6 +803,13 @@ class EmeraldEnv(gym.Env):
             reward += self._pay("caught", self.CAUGHT_REWARD * max(0, s["caught"] - prev["caught"]))
             if s["whiteout"] and not prev["whiteout"]:
                 reward += self._pay("whiteout", self.WHITEOUT_PENALTY)
+                self._since_whiteout = 0
+            self._since_whiteout += 1
+            if (prev.get("party_levels") and prev.get("party_hp_frac", 1.0) < self.HEAL_BELOW
+                    and s.get("party_hp_frac", 0.0) >= 0.99 and not s.get("whiteout")
+                    and self._since_whiteout > self.WHITEOUT_GRACE
+                    and self.knowledge.nurse_tile() is not None):
+                reward += self._pay("center_heal", self.CENTER_HEAL_REWARD)
 
         # Frozen in place: same tile, same map, nothing earned. Checked before
         # the stall counter because it is the tighter and more specific of the
@@ -903,7 +917,8 @@ class EmeraldEnv(gym.Env):
         self._route_idx = self._route_position(s["map"])
         return self._observation(s), self._info(s)
 
-    HEAL_BELOW = 0.5           # party HP fraction under which the heal guide switches on
+    # Under 20% party HP the heal guide switches on (2026-10-20, Abbas; was 50%).
+    HEAL_BELOW = 0.2
     ROUTE_DIST_SCALE = 64.0
 
     def _route_position(self, map_key) -> int:
@@ -957,18 +972,26 @@ class EmeraldEnv(gym.Env):
         return g
 
     def _heal(self, s: dict) -> np.ndarray:
-        """[hurt, N, S, W, E, distance / 64]: toward the last Pokemon Center
-        when party HP is under HEAL_BELOW; all zeros otherwise. On its map it
-        points at the Center's door step, elsewhere at the map edge leading
-        there."""
+        """[hurt, N, S, W, E, distance / 64]: when party HP is under
+        HEAL_BELOW, the way to the nurse at the last Pokemon Center used.
+        Inside a Center it points at the counter (two below the nurse); in
+        the Center's town at its door (the warp nearest the saved heal spot);
+        elsewhere at the way to that town. All zeros when not hurt."""
         h = np.zeros(6, dtype=np.float32)
         loc = s.get("heal_location")
         if not s.get("party_levels") or s.get("party_hp_frac", 1.0) >= self.HEAL_BELOW or not loc:
             return h
         h[0] = 1.0
         target_map, target_xy = loc
-        if tuple(target_map) == tuple(s["map"]):
-            d, dist = self.knowledge.point_to(target_xy, s["pos"])
+        nurse = self.knowledge.nurse_tile()
+        d = None
+        if nurse is not None:
+            d, dist = self.knowledge.point_to(nurse, s["pos"])
+        elif tuple(target_map) == tuple(s["map"]):
+            doors = [(abs(wx - target_xy[0]) + abs(wy - target_xy[1]), wx, wy) for (wx, wy), _ in self.knowledge.warps()]
+            if doors:
+                _, wx, wy = min(doors)
+                d, dist = self.knowledge.point_to((wx, wy), s["pos"])
         else:
             d, dist, _door = self.knowledge.route_to(target_map, s["pos"])
         if d is not None:

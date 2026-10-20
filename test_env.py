@@ -1846,11 +1846,19 @@ def test_observation_has_moves_and_guide():
 
 def test_heal_guide_points_to_the_last_center_when_hurt():
     env = EmeraldEnv()
-    env.reset()                                          # party HP 24%, last heal: Oldale, south of Route 103
+    env.reset()                                          # Route 103; last heal: Oldale, to the south
     s = env.state_reader.read()
-    h = env._heal(dict(s, party_hp_frac=0.24))
-    assert h[0] == 1.0 and h[2] == 1.0, f"hurt on Route 103: should point south to Oldale: {h}"
-    assert not env._heal(dict(s, party_hp_frac=0.9)).any(), "healthy: no heal guidance"
+    assert EmeraldEnv.HEAL_BELOW == 0.2
+    h = env._heal(dict(s, party_hp_frac=0.15))
+    assert h[0] == 1.0 and h[2] == 1.0, f"under 20% on Route 103: should point south to Oldale: {h}"
+    assert not env._heal(dict(s, party_hp_frac=0.3)).any(), "30%: no heal guidance yet"
+    env.close()
+    env = EmeraldEnv(state_path="dialogue.state")        # in Oldale itself
+    env.reset()
+    s = env.state_reader.read()
+    h = env._heal(dict(s, party_hp_frac=0.15))
+    # (1, 10) -> door (6, 16): 5 east, 6 south, so south dominates; 11 tiles.
+    assert h[0] == 1.0 and h[2] == 1.0 and abs(h[5] - 11 / 64) < 1e-6, f"in Oldale: the Center door: {h}"
     env.close()
     print("test_heal_guide_points_to_the_last_center_when_hurt PASSED")
 
@@ -1938,6 +1946,38 @@ def test_sections_inside_buildings_pay_nothing():
     print("test_sections_inside_buildings_pay_nothing PASSED")
 
 
+
+def test_heal_guide_leads_to_the_nurse_inside_the_center():
+    """Inside a Pokemon Center the target is the counter, two tiles below the
+    nurse (graphic 58), where pressing A talks to her."""
+    import glob
+    env = EmeraldEnv(state_path="center.state")
+    env.reset()                                          # Oldale Center, at the door (7, 8)
+    s = env.state_reader.read()
+    assert env.knowledge.nurse_tile() == (7, 4), env.knowledge.nurse_tile()
+    h = env._heal(dict(s, party_hp_frac=0.1))
+    assert h[0] == 1.0 and h[1] == 1.0 and abs(h[5] - 4 / 64) < 1e-6, f"should point north 4 tiles to the counter: {h}"
+    env.close()
+    print("test_heal_guide_leads_to_the_nurse_inside_the_center PASSED")
+
+
+def test_healing_at_a_center_pays_but_a_whiteout_does_not():
+    import glob
+    env = EmeraldEnv(state_path="center.state")
+    env.reset()
+    s = dict(env.state_reader.read(), whiteout=False)
+    hurt, healed = dict(s, party_hp_frac=0.1), dict(s, party_hp_frac=1.0)
+    env._prev = dict(hurt); env._compute_reward(hurt); env.drain_reward_terms()
+    env._compute_reward(healed)
+    paid = env.drain_reward_terms().get("center_heal", 0.0)
+    assert paid > 1 and abs(paid - EmeraldEnv.CENTER_HEAL_REWARD) < 1e-6, f"a Center heal paid {paid}"
+    env._prev = dict(hurt); env._compute_reward(dict(hurt, whiteout=True))   # faint
+    env._compute_reward(hurt); env._compute_reward(healed)                   # warped to the Center, healed
+    assert "center_heal" not in env.drain_reward_terms(), "a whiteout's free heal must not pay"
+    env.close()
+    print("test_healing_at_a_center_pays_but_a_whiteout_does_not PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -2021,6 +2061,8 @@ if __name__ == "__main__":
     test_sections_inside_buildings_pay_nothing()
     test_observation_has_moves_and_guide()
     test_heal_guide_points_to_the_last_center_when_hurt()
+    test_heal_guide_leads_to_the_nurse_inside_the_center()
+    test_healing_at_a_center_pays_but_a_whiteout_does_not()
     test_first_ever_section_pays_extra_and_survives_refresh()
     test_damage_pays_on_enemy_hp_falling_and_charges_on_healing()
     test_damage_pays_nothing_across_battle_start_and_end()
