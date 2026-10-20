@@ -105,7 +105,7 @@ flag exists to answer.
 | Event | Reward |
 | --- | --- |
 | Gym badge | +100 |
-| New map entered | +5 |
+| New outdoor map entered (not houses or buildings) | +5 |
 | New tile visited | +0.05, capped at 400/map |
 | New 8x8 section entered | +0.5, plus +1 the first time ever in the process |
 | Script event flag set | +1 |

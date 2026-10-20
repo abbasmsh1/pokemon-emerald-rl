@@ -556,14 +556,14 @@ def test_map_transition_step_scores_nothing():
     assert env._max_flags["script"] == 181, "high-water mark poisoned in flight"
 
     # arrival, still changing
-    arriving = dict(s, map=(1, 4), script_flag_count=181, trainer_flag_count=64)
+    arriving = dict(s, map=(0, 17), script_flag_count=181, trainer_flag_count=64)
     assert env._compute_reward(arriving) == 0.0, "arrival step paid before settling"
 
     # first stable step credits the real new map exactly once
-    settled = dict(s, map=(1, 4), script_flag_count=181, trainer_flag_count=64)
+    settled = dict(s, map=(0, 17), script_flag_count=181, trainer_flag_count=64)
     r = env._compute_reward(settled)
     assert r >= EmeraldEnv.NEW_MAP_REWARD, f"real new map not credited: {r}"
-    assert (1, 4) in env._visited_maps
+    assert (0, 17) in env._visited_maps
     env.close()
     print("test_map_transition_step_scores_nothing PASSED")
 
@@ -1900,6 +1900,23 @@ def test_guide_never_goes_blank_off_the_route():
     print("test_guide_never_goes_blank_off_the_route PASSED")
 
 
+def test_houses_are_not_new_maps():
+    """Entering a house, Center or lab paid +5 like a new route; the 9.8M
+    policy farmed Littleroot and Oldale buildings for it. Only outdoor maps
+    (map group 0) pay the new-map reward."""
+    env = EmeraldEnv()
+    env.reset()
+    s = env.state_reader.read()
+    env._prev = dict(s); env._compute_reward(s); env.drain_reward_terms()
+    for m in ((1, 2), (2, 4)):                     # a Littleroot house, the Oldale Center
+        a = dict(s, map=m, pos=(3, 3)); env._compute_reward(a); env._compute_reward(a)
+    assert "new_map" not in env.drain_reward_terms(), "an interior paid the new-map reward"
+    a = dict(s, map=(0, 17), pos=(3, 3)); env._compute_reward(a); env._compute_reward(a)   # Route 102
+    assert env.drain_reward_terms().get("new_map", 0) > 1, "an outdoor map must still pay"
+    env.close()
+    print("test_houses_are_not_new_maps PASSED")
+
+
 if __name__ == "__main__":
     test_action_space_is_eight_discrete()
     test_observation_matches_declared_space()
@@ -1979,6 +1996,7 @@ if __name__ == "__main__":
     test_story_flag_pays_once_and_moves_to_the_next_stage()
     test_stage_route_pays_the_next_map_only_once()
     test_guide_never_goes_blank_off_the_route()
+    test_houses_are_not_new_maps()
     test_observation_has_moves_and_guide()
     test_heal_guide_points_to_the_last_center_when_hurt()
     test_first_ever_section_pays_extra_and_survives_refresh()

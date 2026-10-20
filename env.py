@@ -632,7 +632,11 @@ class EmeraldEnv(gym.Env):
 
         if map_key not in self._visited_maps:
             self._visited_maps.add(map_key)
-            reward += self._pay("new_map", self.NEW_MAP_REWARD)
+            # Outdoor maps only (group 0). Houses, Centers and the lab paid
+            # the same +5 as a new route, and the 9.8M policy farmed
+            # Littleroot's and Oldale's buildings for it (2026-10-20, Abbas).
+            if map_key[0] == 0:
+                reward += self._pay("new_map", self.NEW_MAP_REWARD)
 
         tile_key = (map_key[0], map_key[1], s["pos"][0], s["pos"][1])
         if tile_key not in self._visited_tiles:
