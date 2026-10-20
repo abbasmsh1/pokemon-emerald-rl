@@ -82,8 +82,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state", default=None, help="savestate to start from (default: where training starts)")
     parser.add_argument("--demo-dir", default=str(DEMO_DIR))
-    parser.add_argument("--speed", type=float, default=1.25,
-                        help="game speed relative to real time (1.25 = 25%% faster); "
+    parser.add_argument("--speed", type=float, default=1.6,
+                        help="game speed relative to real time (1.6 = 4 agent steps a second); "
                              "only the pace of play changes, each step is still one agent step")
     args = parser.parse_args()
 
